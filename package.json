@@ -1,0 +1,31 @@
+{
+  "name": "cyber-mafia",
+  "version": "1.0.0",
+  "description": "Multiplayer Cyber Infiltration & Social Deduction Game combining Mafia mechanics with real CTF challenges",
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js",
+    "server": "node server/server.js",
+    "build": "npm --prefix client run build",
+    "client": "npm --prefix client run dev"
+  },
+  "keywords": [
+    "cybersecurity",
+    "ctf",
+    "mafia",
+    "social-deduction",
+    "socketio",
+    "react",
+    "express"
+  ],
+  "author": "Sharon Elsa Sam",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.5",
+    "express": "^5.2.1",
+    "socket.io": "^4.8.4",
+    "uuid": "^14.0.2"
+  }
+}
