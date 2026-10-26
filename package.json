@@ -7,7 +7,8 @@
     "start": "node server/server.js",
     "server": "node server/server.js",
     "build": "npm --prefix client run build",
-    "client": "npm --prefix client run dev"
+    "client": "npm --prefix client run dev",
+    "test": "node --test tests/*.test.js"
   },
   "keywords": [
     "cybersecurity",
@@ -22,6 +23,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@supabase/supabase-js": "^2.118.0",
     "cors": "^2.8.6",
     "dotenv": "^18.0.5",
     "express": "^5.2.1",

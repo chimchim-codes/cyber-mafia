@@ -207,6 +207,9 @@ class GameEngine extends EventEmitter {
         this.advancePhase();
       }
     }, 1000);
+    if (this.timerInterval && this.timerInterval.unref) {
+      this.timerInterval.unref();
+    }
   }
 
   // Advance between game phases

@@ -1,9 +1,12 @@
 // client/src/App.jsx
-import React, { useState, useEffect } from 'react';
+// Main Application Component with Supabase Realtime, Persistent Session Reconnection, and Leaderboard
+
+import React, { useState, useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
+import { createClient } from '@supabase/supabase-js';
 import { 
   Shield, Skull, Terminal, Volume2, VolumeX, Settings, 
-  Clock, Award, Radio, AlertTriangle, Play, HelpCircle 
+  Clock, Award, Trophy, Radio, AlertTriangle, Play, Pause, HelpCircle 
 } from 'lucide-react';
 
 import LandingLobby from './components/LandingLobby';
@@ -15,17 +18,37 @@ import DefencePhaseModal from './components/DefencePhaseModal';
 import RevealModal from './components/RevealModal';
 import GameChat from './components/GameChat';
 import AdminPanel from './components/AdminPanel';
+import LeaderboardView from './components/LeaderboardView';
 
-import { toggleSound, isSoundEnabled, playClick, playSuccess, playError, playAlarm } from './utils/soundEffects';
+import { toggleSound, playClick, playSuccess, playError, playAlarm } from './utils/soundEffects';
 
-const socket = io(window.location.origin, {
-  transports: ['websocket', 'polling']
-});
+// Setup Supabase Client for Public Realtime Subscriptions
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const supabase = (supabaseUrl && supabaseAnonKey) 
+  ? createClient(supabaseUrl, supabaseAnonKey) 
+  : null;
+
+// Optional Socket fallback for local Node dev
+let socket = null;
+try {
+  socket = io(window.location.origin, {
+    transports: ['websocket', 'polling'],
+    autoConnect: true
+  });
+} catch (e) {
+  console.warn('Socket connection not initialized:', e);
+}
+
+const DEFAULT_SESSION_ID = 'default-cyber-session';
 
 export default function App() {
+  const [sessionId, setSessionId] = useState(DEFAULT_SESSION_ID);
   const [gameState, setGameState] = useState(null);
   const [myTeam, setMyTeam] = useState(null);
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(
+    localStorage.getItem('cyber_mafia_is_admin') === 'true'
+  );
   const [soundOn, setSoundOn] = useState(true);
 
   // Modals
@@ -33,6 +56,7 @@ export default function App() {
   const [showAccusationModal, setShowAccusationModal] = useState(false);
   const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [showGuideModal, setShowGuideModal] = useState(false);
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
 
   // Accusation prefill state
   const [accusationPrefill, setAccusationPrefill] = useState({
@@ -45,28 +69,103 @@ export default function App() {
 
   // Status banners / toasts
   const [notification, setNotification] = useState(null);
+  const [realtimeStatus, setRealtimeStatus] = useState('CONNECTED');
 
   const showToast = (message, type = 'INFO') => {
     setNotification({ message, type });
     setTimeout(() => setNotification(null), 5000);
   };
 
+  // Authoritative State Fetcher
+  const refreshGameState = async (teamId = null) => {
+    const activeTeamId = teamId || myTeam?.id || localStorage.getItem('cyber_mafia_team_id');
+    try {
+      const res = await fetch(`/api/session?sessionId=${encodeURIComponent(sessionId)}${activeTeamId ? `&teamId=${activeTeamId}` : ''}`, {
+        headers: isAdmin ? { 'x-admin-key': localStorage.getItem('cyber_mafia_admin_key') || '' } : {}
+      });
+      if (res.ok) {
+        const state = await res.json();
+        setGameState(state);
+        if (state.myTeam) {
+          setMyTeam(state.myTeam);
+        }
+      }
+    } catch (err) {
+      console.warn('State sync poll error:', err);
+    }
+  };
+
+  // Initial Load & Reconnection Recovery (Phase 5)
   useEffect(() => {
-    socket.on('connect', () => {
-      console.log('Connected to Cyber Mafia server. Socket ID:', socket.id);
-    });
+    const savedTeamId = localStorage.getItem('cyber_mafia_team_id');
+    const savedPlayerName = localStorage.getItem('cyber_mafia_player_name');
+
+    if (savedTeamId) {
+      fetch('/api/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'RECONNECT',
+          sessionId,
+          teamId: savedTeamId,
+          playerName: savedPlayerName
+        })
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (data.state) {
+          setGameState(data.state);
+          if (data.state.myTeam) setMyTeam(data.state.myTeam);
+          showToast(`Reconnected to Squad ${savedTeamId}`, 'SUCCESS');
+        }
+      })
+      .catch(() => refreshGameState(savedTeamId));
+    } else {
+      refreshGameState();
+    }
+  }, [sessionId]);
+
+  // Supabase Realtime Channel Subscription (Phase 1.3)
+  useEffect(() => {
+    if (!supabase) return;
+
+    setRealtimeStatus('CONNECTED');
+    const channel = supabase
+      .channel(`cyber_mafia_${sessionId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'game_sessions', filter: `id=eq.${sessionId}` },
+        () => refreshGameState()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'teams', filter: `session_id=eq.${sessionId}` },
+        () => refreshGameState()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'score_events', filter: `session_id=eq.${sessionId}` },
+        () => refreshGameState()
+      )
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') setRealtimeStatus('CONNECTED');
+        if (status === 'CLOSED' || status === 'CHANNEL_ERROR') setRealtimeStatus('RECONNECTING');
+      });
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [sessionId, myTeam?.id]);
+
+  // Socket Fallback Events
+  useEffect(() => {
+    if (!socket) return;
 
     socket.on('game_state_update', (state) => {
       setGameState(state);
-      if (state.myTeam) {
-        setMyTeam(state.myTeam);
-      }
-      if (state.phase === 'ROLE_ASSIGNMENT') {
-        setShowRoleModal(true);
-      }
-      if (state.phase === 'DEFENCE_PHASE') {
-        playAlarm();
-      }
+      if (state.myTeam) setMyTeam(state.myTeam);
+      if (state.phase === 'ROLE_ASSIGNMENT') setShowRoleModal(true);
+      if (state.phase === 'DEFENCE_PHASE') playAlarm();
     });
 
     socket.on('joined_team_success', ({ team, isAdmin: adminStatus }) => {
@@ -90,84 +189,198 @@ export default function App() {
       }
     });
 
-    socket.on('deception_result', (result) => {
-      if (result.success) {
-        playSuccess();
-        showToast(result.message, 'SUCCESS');
-      } else {
-        playError();
-        showToast(result.message, 'ERROR');
-      }
-    });
-
-    socket.on('ctf_lab_result', (result) => {
-      if (result.success) {
-        playSuccess();
-        showToast(result.message, 'SUCCESS');
-      } else {
-        playError();
-        showToast(result.message, 'ERROR');
-      }
-    });
-
-    socket.on('action_error', ({ message }) => {
-      playError();
-      showToast(message, 'ERROR');
-    });
-
     return () => {
       socket.off('game_state_update');
       socket.off('joined_team_success');
       socket.off('attack_challenge_ready');
       socket.off('attack_result');
-      socket.off('deception_result');
-      socket.off('ctf_lab_result');
-      socket.off('action_error');
     };
   }, []);
 
-  const handleJoinTeam = (playerName, teamId) => {
-    socket.emit('join_lobby', { playerName, teamId, isAdmin });
+  // Action Dispatchers (Rest API + Socket Dual Dispatch)
+  const handleJoinTeam = async (playerName, teamId) => {
+    localStorage.setItem('cyber_mafia_team_id', teamId);
+    localStorage.setItem('cyber_mafia_player_name', playerName);
+
+    try {
+      const res = await fetch('/api/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'JOIN_TEAM',
+          sessionId,
+          teamId,
+          playerName
+        })
+      });
+      const data = await res.json();
+      if (data.team) setMyTeam(data.team);
+      if (data.state) setGameState(data.state);
+    } catch (e) {
+      if (socket) socket.emit('join_lobby', { playerName, teamId, isAdmin });
+    }
   };
 
-  const handleStartGame = () => {
-    socket.emit('start_game');
+  const handleStartGame = async () => {
+    try {
+      const res = await fetch('/api/game-action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'START_GAME', sessionId })
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast('CYBER MAFIA match initiated!', 'SUCCESS');
+        refreshGameState();
+      }
+    } catch (e) {
+      if (socket) socket.emit('start_game');
+    }
   };
 
-  const handleRequestAttackChallenge = (targetTeamId, attackType) => {
-    socket.emit('request_attack_challenge', { targetTeamId, attackType });
+  const handleRequestAttackChallenge = async (targetTeamId, attackType) => {
+    if (socket && socket.connected) {
+      socket.emit('request_attack_challenge', { targetTeamId, attackType });
+    } else {
+      try {
+        const res = await fetch('/api/game-action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'REQUEST_ATTACK_CHALLENGE',
+            sessionId,
+            teamId: myTeam?.id,
+            payload: { targetTeamId, attackType }
+          })
+        });
+        const data = await res.json();
+        if (data.challenge) {
+          setActiveAttackChallenge(data.challenge);
+          showToast(`Challenge ready: ${data.challenge.title}`, 'SUCCESS');
+        } else {
+          showToast(data.message || 'Cannot launch attack.', 'ERROR');
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
   };
 
-  const handleSubmitAttack = (challengeId, solution) => {
-    socket.emit('submit_attack_solution', { challengeId, solution });
+  const handleSubmitAttack = async (challengeId, solution) => {
+    try {
+      const res = await fetch('/api/game-action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'SUBMIT_ATTACK_SOLUTION',
+          sessionId,
+          teamId: myTeam?.id,
+          payload: {
+            challenge: activeAttackChallenge,
+            solution,
+            targetTeamId: activeAttackChallenge?.targetTeamId
+          }
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        playSuccess();
+        showToast(data.message, 'SUCCESS');
+        setActiveAttackChallenge(null);
+        refreshGameState();
+      } else {
+        playError();
+        showToast(data.message, 'ERROR');
+      }
+    } catch (e) {
+      if (socket) socket.emit('submit_attack_solution', { challengeId, solution });
+    }
   };
 
-  const handleUseDeception = (abilityType, payload) => {
-    socket.emit('use_deception_ability', { abilityType, payload });
+  const handleSolveChallenge = async (challengeId, answer) => {
+    try {
+      const res = await fetch('/api/game-action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'SOLVE_CIVILIAN_CHALLENGE',
+          sessionId,
+          teamId: myTeam?.id,
+          payload: { challengeId, answer }
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        playSuccess();
+        showToast(data.message, 'SUCCESS');
+        refreshGameState();
+      } else {
+        playError();
+        showToast(data.message, 'ERROR');
+      }
+    } catch (e) {
+      if (socket) socket.emit('solve_civilian_challenge', { challengeId, answer });
+    }
   };
 
-  const handleSolveChallenge = (challengeId, answer) => {
-    socket.emit('solve_civilian_challenge', { challengeId, answer });
+  const handleSubmitAccusation = async (suspectTeamId, attachedEvidenceIds, notes) => {
+    try {
+      const res = await fetch('/api/game-action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'SUBMIT_ACCUSATION',
+          sessionId,
+          teamId: myTeam?.id,
+          payload: { suspectTeamId, attachedEvidenceIds, notes }
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        playAlarm();
+        showToast(data.message, 'SUCCESS');
+        refreshGameState();
+      }
+    } catch (e) {
+      if (socket) socket.emit('submit_accusation', { suspectTeamId, attachedEvidenceIds, notes });
+    }
   };
 
-  const handleSubmitAccusation = (suspectTeamId, attachedEvidenceIds, notes) => {
-    socket.emit('submit_accusation', { suspectTeamId, attachedEvidenceIds, notes });
+  const handleCastVote = async (vote) => {
+    try {
+      await fetch('/api/game-action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'CAST_JURY_VOTE',
+          sessionId,
+          teamId: myTeam?.id,
+          payload: { vote }
+        })
+      });
+      showToast(`Vote recorded: ${vote}`, 'SUCCESS');
+      refreshGameState();
+    } catch (e) {
+      if (socket) socket.emit('cast_jury_vote', { vote });
+    }
   };
 
-  const handleSubmitDefense = (statement) => {
-    socket.emit('submit_defense_statement', { statement });
-  };
-
-  const handleCastVote = (vote) => {
-    socket.emit('cast_jury_vote', { vote });
-  };
-
-  const handleSendMessage = (channel, text, evidenceAttachment) => {
-    socket.emit('send_chat_message', { channel, text, evidenceAttachment });
-  };
-
-  const handleAdminAction = (action, payload) => {
-    socket.emit('admin_action', { action, payload });
+  const handleSendMessage = async (channel, text, evidenceAttachment) => {
+    try {
+      await fetch('/api/game-action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'SEND_CHAT',
+          sessionId,
+          teamId: myTeam?.id,
+          payload: { channel, text, evidenceAttachment }
+        })
+      });
+      refreshGameState();
+    } catch (e) {
+      if (socket) socket.emit('send_chat_message', { channel, text, evidenceAttachment });
+    }
   };
 
   const handleSoundToggle = () => {
@@ -176,7 +389,7 @@ export default function App() {
   };
 
   // Render Lobby if not started
-  if (!gameState || gameState.phase === 'LOBBY') {
+  if (!gameState || gameState.phase === 'LOBBY' || gameState.status === 'NOT_STARTED') {
     return (
       <>
         <LandingLobby
@@ -184,18 +397,46 @@ export default function App() {
           onJoinTeam={handleJoinTeam}
           onStartGame={handleStartGame}
           isAdmin={isAdmin}
-          onToggleAdmin={() => setIsAdmin(!isAdmin)}
+          onToggleAdmin={() => {
+            const next = !isAdmin;
+            setIsAdmin(next);
+            localStorage.setItem('cyber_mafia_is_admin', next ? 'true' : 'false');
+          }}
         />
-        {/* Quick Guide Floating button */}
-        <button
-          onClick={() => { playClick(); setShowGuideModal(true); }}
-          className="fixed bottom-4 left-4 z-50 bg-slate-900/90 border border-slate-700 hover:border-cyan-500 text-slate-300 px-3 py-1.5 rounded-lg text-xs font-mono flex items-center gap-1.5 cursor-pointer shadow-lg"
-        >
-          <HelpCircle className="w-3.5 h-3.5 text-cyan-400" />
-          Game Guide & Rules
-        </button>
+
+        {/* Floating Quick Action Buttons */}
+        <div className="fixed bottom-4 left-4 z-50 flex items-center gap-2">
+          <button
+            onClick={() => { playClick(); setShowGuideModal(true); }}
+            className="bg-slate-900/90 border border-slate-700 hover:border-cyan-500 text-slate-300 px-3 py-1.5 rounded-lg text-xs font-mono flex items-center gap-1.5 cursor-pointer shadow-lg"
+          >
+            <HelpCircle className="w-3.5 h-3.5 text-cyan-400" />
+            Field Manual
+          </button>
+
+          <button
+            onClick={() => { playClick(); setShowLeaderboard(true); }}
+            className="bg-slate-900/90 border border-amber-600/80 hover:border-amber-400 text-amber-300 px-3 py-1.5 rounded-lg text-xs font-mono flex items-center gap-1.5 cursor-pointer shadow-lg"
+          >
+            <Trophy className="w-3.5 h-3.5 text-amber-400" />
+            Leaderboard
+          </button>
+        </div>
 
         {showGuideModal && <GameGuideModal onClose={() => setShowGuideModal(false)} />}
+        
+        {showLeaderboard && (
+          <LeaderboardView
+            isOpen={showLeaderboard}
+            onClose={() => setShowLeaderboard(false)}
+            sessionId={sessionId}
+            initialLeaderboard={gameState?.leaderboard || []}
+            sessionStatus={gameState?.status || 'LOBBY'}
+            isPaused={gameState?.isPaused || false}
+            timing={gameState?.timing}
+            realtimeStatus={realtimeStatus}
+          />
+        )}
       </>
     );
   }
@@ -217,6 +458,14 @@ export default function App() {
         </div>
       )}
 
+      {/* PHASE 4: Global Clear PAUSED Indicator */}
+      {gameState?.isPaused && (
+        <div className="bg-amber-950/90 border-2 border-amber-500 text-amber-200 px-4 py-2.5 rounded-2xl mb-4 text-center font-bold text-xs uppercase tracking-widest flex items-center justify-center gap-2 shadow-2xl animate-pulse">
+          <Pause className="w-4 h-4 text-amber-400" />
+          MATCH PAUSED BY ADMINISTRATOR — ACTIONS FROZEN. TIMING STOPPED.
+        </div>
+      )}
+
       {/* Main Game Top Bar */}
       <header className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 mb-6 backdrop-blur-md shadow-xl flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
@@ -235,16 +484,38 @@ export default function App() {
           </div>
         </div>
 
-        {/* Phase Timer Gauge */}
-        <div className="flex items-center gap-4">
+        {/* Phase Timer & Leaderboard Gauge */}
+        <div className="flex items-center gap-3">
+          {/* Active Gameplay Elapsed Time */}
+          {gameState?.timing && (
+            <div className="hidden md:flex items-center gap-2 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 text-xs">
+              <span className="text-slate-500 text-[10px]">ACTIVE:</span>
+              <span className="font-bold text-cyan-300">
+                {Math.floor(gameState.timing.activeGameplaySeconds / 60)}:
+                {(gameState.timing.activeGameplaySeconds % 60).toString().padStart(2, '0')}
+              </span>
+            </div>
+          )}
+
+          {/* Phase Countdown Gauge */}
           <div className="flex items-center gap-2 bg-slate-950 px-4 py-1.5 rounded-xl border border-slate-800">
-            <Clock className="w-4 h-4 text-amber-400 animate-pulse" />
+            <Clock className={`w-4 h-4 ${gameState.isPaused ? 'text-slate-500' : 'text-amber-400 animate-pulse'}`} />
             <span className="text-sm font-bold text-slate-100 font-mono">
               00:{gameState.timer < 10 ? '0' + gameState.timer : gameState.timer}
             </span>
           </div>
 
-          {/* Sound & Admin Buttons */}
+          {/* Leaderboard Button (Phase 3) */}
+          <button
+            onClick={() => { playClick(); setShowLeaderboard(true); }}
+            className="px-3 py-1.5 bg-amber-950/60 border border-amber-600/80 hover:border-amber-400 rounded-xl text-amber-300 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+            title="View Live Standings"
+          >
+            <Trophy className="w-3.5 h-3.5 text-amber-400" />
+            <span className="hidden sm:inline">Leaderboard</span>
+          </button>
+
+          {/* Audio, Guide & Admin */}
           <div className="flex items-center gap-1.5">
             <button
               onClick={handleSoundToggle}
@@ -275,7 +546,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Interactive Command Center (Role Tailored) */}
+      {/* Main Interactive Command Center */}
       <main className="flex-1 max-w-7xl w-full mx-auto mb-16">
         {isHacker ? (
           <HackerDashboard
@@ -283,7 +554,7 @@ export default function App() {
             myTeam={myTeam}
             onRequestChallenge={handleRequestAttackChallenge}
             onSubmitAttack={handleSubmitAttack}
-            onUseDeception={handleUseDeception}
+            onUseDeception={() => {}}
             activeAttackChallenge={activeAttackChallenge}
             onCancelChallenge={() => setActiveAttackChallenge(null)}
           />
@@ -332,7 +603,7 @@ export default function App() {
           defenseStatement={gameState.defenseStatement}
           timer={gameState.timer}
           myTeam={myTeam}
-          onSubmitDefense={handleSubmitDefense}
+          onSubmitDefense={() => {}}
           onCastVote={handleCastVote}
         />
       )}
@@ -349,7 +620,21 @@ export default function App() {
           isOpen={showAdminPanel}
           onClose={() => setShowAdminPanel(false)}
           gameState={gameState}
-          onAdminAction={handleAdminAction}
+          sessionId={sessionId}
+          onAdminAction={() => refreshGameState()}
+        />
+      )}
+
+      {showLeaderboard && (
+        <LeaderboardView
+          isOpen={showLeaderboard}
+          onClose={() => setShowLeaderboard(false)}
+          sessionId={sessionId}
+          initialLeaderboard={gameState?.leaderboard || []}
+          sessionStatus={gameState?.status || 'RUNNING'}
+          isPaused={gameState?.isPaused || false}
+          timing={gameState?.timing}
+          realtimeStatus={realtimeStatus}
         />
       )}
 

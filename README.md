@@ -179,6 +179,55 @@ Solo players can click **"Quick Match (with Bots)"** on the landing screen:
 
 ---
 
+## 🚀 Persistent Serverless Architecture (Vercel + Supabase)
+
+CYBER MAFIA has been upgraded with an authoritative serverless backend powered exclusively by **Vercel** and **Supabase**:
+
+- **🏆 Real-Time Leaderboard**: Live deterministic standings with tie-breaking (Score > Levels Completed > Checkpoint Timestamp > Squad ID).
+- **💾 Persistent Game Progress**: Automatic checkpoints after validated actions. Squad progress survives refreshes, disconnections, and serverless cold starts.
+- **⏱️ Authoritative Lifecycle & Timing**: Administrator controls for **Start**, **Pause**, **Resume**, and **End**. Active gameplay duration accurately subtracts all paused intervals.
+- **🔄 Administrative Recovery Snapshots**: Automatic and manual recovery checkpoints per squad and level with atomic restoration and score reconciliation.
+- **🧹 Granular Progress Resets**: Reset a squad's current level or entire game progress with full audit trail logging.
+- **📊 Secure CSV Final Results Export**: One-click download of official tournament results with spreadsheet formula injection protection (`=`, `+`, `-`, `@` sanitization).
+
+---
+
+## 🛠️ Quick Start & Deployment
+
+### 1. Database Setup (Supabase)
+Run the SQL schema in [`supabase/migrations/001_initial_schema.sql`](supabase/migrations/001_initial_schema.sql) in your Supabase SQL Editor. See [Database Setup Guide](docs/DATABASE_SETUP.md) for full details.
+
+### 2. Environment Variables
+Copy `.env.example` to `.env` and set your credentials:
+```bash
+SUPABASE_URL=https://your-project-id.supabase.co
+SUPABASE_ANON_KEY=your-supabase-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-supabase-service-role-key
+ADMIN_SECRET_KEY=your-admin-secret-key
+VITE_SUPABASE_URL=https://your-project-id.supabase.co
+VITE_SUPABASE_ANON_KEY=your-supabase-anon-key
+```
+
+### 3. Run Automated Tests
+```bash
+npm test
+```
+Executes 37 tests covering leaderboard rankings, lifecycle states, progress persistence, recovery snapshots, and CSV export.
+
+### 4. Deploy to Vercel
+Deploy seamlessly using the Vercel dashboard or CLI. Read the [Deployment Guide](docs/DEPLOYMENT.md) for complete instructions.
+
+---
+
+## 📚 Technical Documentation
+- [Architecture Audit & Serverless Migration Plan](docs/ARCHITECTURE_AUDIT.md)
+- [Persistence & Live Leaderboard Architecture](docs/PERSISTENCE_AND_LEADERBOARD.md)
+- [Supabase Database Setup & Schema](docs/DATABASE_SETUP.md)
+- [Admin Recovery, Resets & CSV Export Guide](docs/ADMIN_RECOVERY.md)
+- [Vercel & Supabase Deployment Guide](docs/DEPLOYMENT.md)
+
+---
+
 ## 📜 License
 
 This project is licensed under the ISC License.
