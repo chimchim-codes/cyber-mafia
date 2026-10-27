@@ -814,6 +814,12 @@ export default function App() {
 
   // Handler: Submit Accusation (Supports both MCQ 5-question model and legacy suspect ID)
   const handleSubmitAccusation = async (answersOrSuspectId, attachedEvidenceIds, notes) => {
+    if (myTeam?.hasSubmittedAccusation) {
+      playError();
+      showToast('❌ SUBMISSION LOCKED: Your team has already submitted an accusation. Only 1 submission allowed.', 'ERROR');
+      return;
+    }
+
     playAlarm();
 
     if (typeof answersOrSuspectId === 'object' && answersOrSuspectId !== null && 'q1' in answersOrSuspectId) {
@@ -824,7 +830,7 @@ export default function App() {
       }
 
       try {
-        await fetch('/api/game-action', {
+        const res = await fetch('/api/game-action', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -834,9 +840,19 @@ export default function App() {
             payload: { answers }
           })
         });
+        const resData = await res.json();
+        if (resData.alreadySubmitted) {
+          playError();
+          showToast('❌ Submission rejected: Team has already submitted an accusation.', 'ERROR');
+          setMyTeam(prev => ({ ...prev, hasSubmittedAccusation: true }));
+          return;
+        }
       } catch (e) {
         // standalone fallback handled below
       }
+
+      // Mark team as submitted locally
+      setMyTeam(prev => ({ ...prev, hasSubmittedAccusation: true }));
 
       // Client-side verdict calculation fallback with Desktop Timestamp receipt
       const isQ1 = answers.q1 === 'D'; // Elena Ward
@@ -890,7 +906,7 @@ export default function App() {
         actualRole: 'KILLER',
         penaltyMessage: isSolved
           ? `🚨 MURDER SOLVED! Elena Ward convicted of murdering Dr. Adrian Vale! +500 PTS awarded.`
-          : `❌ ACCUSATION INCORRECT: ${score}/5 questions correct. Review forensic evidence and try again.`,
+          : `❌ ACCUSATION INCORRECT: ${score}/5 questions correct. Official case record filed with Tribunal.`,
         timestampInfo: {
           startTime: startTime.toISOString(),
           stopTime: stopTime.toISOString(),
@@ -904,16 +920,27 @@ export default function App() {
 
       setCustomVerdict(verdict);
 
+      // Automatically generate & download the official forensic PDF
+      try {
+        generateTribunalAccusationPDF(verdict, {
+          ...(myTeam || {}),
+          hasSubmittedAccusation: true
+        });
+      } catch (pdfErr) {
+        console.error('PDF auto-download error:', pdfErr);
+      }
+
       if (isSolved) {
         playSuccess();
-        showToast('MURDER SOLVED! Elena Ward convicted!', 'SUCCESS');
-        setMyTeam(prev => ({ ...prev, score: (prev?.score || 0) + 500 }));
+        showToast('MURDER SOLVED! Elena Ward convicted! Case Record PDF downloaded.', 'SUCCESS');
+        setMyTeam(prev => ({ ...prev, score: (prev?.score || 0) + 500, hasSubmittedAccusation: true }));
       } else {
         playError();
-        showToast(`Accusation result: ${score}/5 correct`, 'ERROR');
-        setMyTeam(prev => ({ ...prev, score: Math.max(0, (prev?.score || 0) - 50) }));
+        showToast(`Accusation result: ${score}/5 correct. Case Record PDF downloaded.`, 'ERROR');
+        setMyTeam(prev => ({ ...prev, score: Math.max(0, (prev?.score || 0) - 50), hasSubmittedAccusation: true }));
       }
     } else {
+      setMyTeam(prev => ({ ...prev, hasSubmittedAccusation: true }));
       const suspectTeamId = answersOrSuspectId;
       try {
         const res = await fetch('/api/game-action', {
@@ -1028,13 +1055,16 @@ export default function App() {
             Quick Guide
           </button>
 
-          <button
-            onClick={() => { playClick(); setShowLeaderboard(true); }}
-            className="bg-slate-900/90 border border-amber-600/80 hover:border-amber-400 text-amber-300 px-3 py-1.5 rounded-lg text-xs font-mono flex items-center gap-1.5 cursor-pointer shadow-lg"
-          >
-            <Trophy className="w-3.5 h-3.5 text-amber-400" />
-            Leaderboard
-          </button>
+          {isAdmin && (
+            <button
+              onClick={() => { playClick(); setShowLeaderboard(true); }}
+              className="bg-slate-900/90 border border-amber-600/80 hover:border-amber-400 text-amber-300 px-3 py-1.5 rounded-lg text-xs font-mono flex items-center gap-1.5 cursor-pointer shadow-lg"
+              title="View Live Standings (Admin Only)"
+            >
+              <Trophy className="w-3.5 h-3.5 text-amber-400" />
+              Leaderboard (Admin)
+            </button>
+          )}
 
           <button
             onClick={() => { playClick(); setShowAdminPanel(true); }}
@@ -1077,6 +1107,13 @@ export default function App() {
               setSecurityAlerts([]);
               localStorage.removeItem('cyber_mafia_security_alerts');
             }}
+            submissionAlerts={submissionAlerts}
+            onClearSubmissionAlerts={() => {
+              setSubmissionAlerts([]);
+              try {
+                localStorage.removeItem('cyber_mafia_submission_alerts');
+              } catch (e) {}
+            }}
             onAdminAction={() => {
               if (socket && socket.connected) {
                 socket.emit('admin_action', { action: 'REFRESH' });
@@ -1088,7 +1125,7 @@ export default function App() {
 
         {showGuideModal && <GameGuideModal onClose={() => setShowGuideModal(false)} />}
         
-        {showLeaderboard && (
+        {showLeaderboard && isAdmin && (
           <LeaderboardView
             isOpen={showLeaderboard}
             onClose={() => setShowLeaderboard(false)}
@@ -1171,15 +1208,17 @@ export default function App() {
             </div>
           )}
 
-          {/* Leaderboard Button */}
-          <button
-            onClick={() => { playClick(); setShowLeaderboard(true); }}
-            className="px-3 py-1.5 bg-amber-950/60 border border-amber-600/80 hover:border-amber-400 rounded-xl text-amber-300 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-            title="View Live Standings"
-          >
-            <Trophy className="w-3.5 h-3.5 text-amber-400" />
-            <span className="hidden sm:inline">Leaderboard</span>
-          </button>
+          {/* Leaderboard Button - Admin Only */}
+          {isAdmin && (
+            <button
+              onClick={() => { playClick(); setShowLeaderboard(true); }}
+              className="px-3 py-1.5 bg-amber-950/60 border border-amber-600/80 hover:border-amber-400 rounded-xl text-amber-300 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+              title="View Live Standings (Admin Only)"
+            >
+              <Trophy className="w-3.5 h-3.5 text-amber-400" />
+              <span className="hidden sm:inline">Leaderboard</span>
+            </button>
+          )}
 
           {/* Audio, Guide & Admin */}
           <div className="flex items-center gap-1.5">
@@ -1254,6 +1293,7 @@ export default function App() {
           isOpen={showAccusationModal}
           onClose={() => setShowAccusationModal(false)}
           onSubmitAccusation={handleSubmitAccusation}
+          hasAlreadySubmitted={Boolean(myTeam?.hasSubmittedAccusation)}
         />
       )}
 
@@ -1262,6 +1302,7 @@ export default function App() {
         <RevealModal
           revealResult={customVerdict}
           onClose={() => setCustomVerdict(null)}
+          myTeam={myTeam}
         />
       )}
 
@@ -1282,6 +1323,7 @@ export default function App() {
         <RevealModal
           revealResult={gameState.revealResult}
           timer={gameState.timer}
+          myTeam={myTeam}
         />
       )}
 
@@ -1304,6 +1346,13 @@ export default function App() {
               localStorage.removeItem('cyber_mafia_security_alerts');
             } catch (e) {}
           }}
+          submissionAlerts={submissionAlerts}
+          onClearSubmissionAlerts={() => {
+            setSubmissionAlerts([]);
+            try {
+              localStorage.removeItem('cyber_mafia_submission_alerts');
+            } catch (e) {}
+          }}
           onAdminAction={() => {
             if (socket && socket.connected) {
               socket.emit('admin_action', { action: 'REFRESH' });
@@ -1313,8 +1362,8 @@ export default function App() {
         />
       )}
 
-      {/* Leaderboard View */}
-      {showLeaderboard && (
+      {/* Leaderboard View - Admin Only */}
+      {showLeaderboard && isAdmin && (
         <LeaderboardView
           isOpen={showLeaderboard}
           onClose={() => setShowLeaderboard(false)}
