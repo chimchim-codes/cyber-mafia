@@ -131,6 +131,76 @@ module.exports = async function handler(req, res) {
       }
     }
 
+    if (action === 'ADMIN_RESET_GAME') {
+      const auth = verifyAdminAuthorization(req);
+      if (!auth.authorized) {
+        return res.status(auth.statusCode || 401).json({ success: false, code: auth.code, message: auth.message });
+      }
+
+      await supabase.from('game_sessions').update({
+        status: 'NOT_STARTED',
+        current_phase: 'LOBBY',
+        current_round: 1,
+        started_at: null,
+        ended_at: null,
+        is_paused: false,
+        pause_started_at: null,
+        accumulated_paused_seconds: 0,
+        active_accusation: null,
+        defense_statement: null,
+        jury_votes: {},
+        reveal_result: null,
+        last_meaningful_update: new Date().toISOString()
+      }).eq('id', sessionId);
+
+      // Reset all teams in this session
+      const { data: teams } = await supabase.from('teams').select('*').eq('session_id', sessionId);
+      for (const t of (teams || [])) {
+        await supabase.from('teams').update({
+          score: 0,
+          integrity: 100,
+          is_eliminated: false,
+          secret_revealed: false,
+          players: [],
+          is_bot: true,
+          updated_at: new Date().toISOString()
+        }).eq('session_id', sessionId).eq('id', t.id);
+      }
+
+      // Clear score_events and team_progress for clean slate
+      try {
+        await supabase.from('score_events').delete().eq('session_id', sessionId);
+        await supabase.from('team_progress').delete().eq('session_id', sessionId);
+      } catch (_) {}
+
+      await gameService.logSystem(sessionId, 'ADMIN_RESET', 'ADMIN', `Match session ${sessionId} completely reset to Lobby. All scores and checkpoints wiped.`);
+      return res.status(200).json({ success: true, message: 'Game session and all scores reset to lobby.' });
+    }
+
+    // Proctoring & Audit Actions
+    if (action === 'SECURITY_ALERT') {
+      const { type, details, playerName, systemNo, teamId: alertTeamId, teamName } = payload || {};
+      const formattedMsg = `[PROCTORING BREACH] ${type} by ${playerName || 'Unknown'} (System: ${systemNo || 'N/A'}, Squad: ${teamName || alertTeamId || 'N/A'}): ${details}`;
+      await gameService.logSystem(sessionId, 'SECURITY_ALERT', alertTeamId || 'SECURITY', formattedMsg);
+      return res.status(200).json({ success: true, message: 'Security alert logged.' });
+    }
+
+    if (action === 'PLAYER_LOGIN') {
+      const { playerName, systemNo, teamId: loginTeamId, teamName } = payload || {};
+      const formattedMsg = `[LOGIN] Investigator ${playerName || 'Agent'} joined squad ${teamName || loginTeamId} from System Terminal: ${systemNo || 'SYS-DEFAULT'}`;
+      await gameService.logSystem(sessionId, 'PLAYER_LOGIN', loginTeamId || 'SYSTEM', formattedMsg);
+      return res.status(200).json({ success: true, message: 'Login event logged.' });
+    }
+
+    if (action === 'GET_AUDIT_TRAIL') {
+      const { data: logs } = await supabase
+        .from('game_logs')
+        .select('*')
+        .eq('session_id', sessionId)
+        .order('created_at', { ascending: false });
+      return res.status(200).json({ success: true, logs: logs || [] });
+    }
+
     // Verify session is active for regular gameplay actions
     if (session.is_paused || session.status === 'PAUSED') {
       return res.status(400).json({ success: false, message: 'Match is currently PAUSED. Actions are frozen.' });
@@ -245,6 +315,36 @@ module.exports = async function handler(req, res) {
         success: true,
         message: `Challenge Solved! +${chal.rewardScore} Points. Forensic Clue: "${chal.evidenceClue}"`,
         clue: chal.evidenceClue
+      });
+    }
+
+    // Gameplay: Submit MCQ Accusation
+    if (action === 'SUBMIT_MCQ_ACCUSATION') {
+      const { answers } = payload || {};
+      const isQ1 = answers?.q1 === 'D';
+      const isQ2 = answers?.q2 === 'A';
+      const isQ3 = answers?.q3 === 'B';
+      const isQ4 = answers?.q4 === 'D' || answers?.q4 === 'C';
+      const isQ5 = Array.isArray(answers?.q5) && ['A', 'B', 'C', 'D'].every(o => answers.q5.includes(o)) && answers.q5.length === 4;
+      const score = (isQ1 ? 1 : 0) + (isQ2 ? 1 : 0) + (isQ3 ? 1 : 0) + (isQ4 ? 1 : 0) + (isQ5 ? 1 : 0);
+      const isSolved = score === 5;
+
+      try {
+        await gameService.logSystem(
+          sessionId,
+          isSolved ? 'FORENSIC_SOLVE' : 'WARNING',
+          'TRIBUNAL',
+          `High Tribunal Accusation filed by ${teamId || 'Investigator'}: ${score}/5 correct. Result: ${isSolved ? 'CASE SOLVED - ELENA WARD GUILTY' : 'INCOMPLETE/INCORRECT'}`
+        );
+      } catch (_) {}
+
+      return res.status(200).json({
+        success: true,
+        verdict: {
+          isSolved,
+          score,
+          details: { isQ1, isQ2, isQ3, isQ4, isQ5 }
+        }
       });
     }
 

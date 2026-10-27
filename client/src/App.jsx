@@ -104,6 +104,16 @@ export default function App() {
     }
   });
 
+  // Chronological Audit Trail of logins, window movements/breaches, and solves
+  const [auditLogs, setAuditLogs] = useState(() => {
+    try {
+      const saved = localStorage.getItem('cyber_mafia_audit_trail');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
   const [adminKey, setAdminKey] = useState(
     () => localStorage.getItem('cyber_mafia_admin_key') || ''
   );
@@ -362,13 +372,16 @@ export default function App() {
 
   // Record security alerts & notify admin console
   const recordSecurityAlert = (type, details) => {
+    if (isAdmin) return; // Admin is never flagged or locked out
     playAlarm();
+    const systemNo = localStorage.getItem('cyber_mafia_system_no') || myTeam?.systemNo || 'SYS-DEFAULT';
     const newAlert = {
       id: 'SEC-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
       timestamp: new Date().toLocaleTimeString(),
       playerName: localStorage.getItem('cyber_mafia_player_name') || myTeam?.playerName || 'Investigator',
-      teamId: myTeam?.id || 'S01',
-      teamName: myTeam?.name || 'Investigator',
+      systemNo,
+      teamId: myTeam?.id || 'C01',
+      teamName: myTeam?.name || 'Cyber Alpha',
       type,
       details,
       severity: 'HIGH'
@@ -378,6 +391,15 @@ export default function App() {
       const updated = [newAlert, ...prev];
       try {
         localStorage.setItem('cyber_mafia_security_alerts', JSON.stringify(updated));
+      } catch (e) {}
+      return updated;
+    });
+
+    // Also append to chronological audit trail
+    setAuditLogs(prev => {
+      const updated = [newAlert, ...prev];
+      try {
+        localStorage.setItem('cyber_mafia_audit_trail', JSON.stringify(updated));
       } catch (e) {}
       return updated;
     });
@@ -392,7 +414,7 @@ export default function App() {
             timestamp: new Date().toLocaleTimeString(),
             type: 'BREACH',
             source: 'SECURITY_GUARD',
-            message: `PROCTORING BREACH: ${newAlert.playerName} (${newAlert.teamId}) - ${details}`
+            message: `PROCTORING BREACH: ${newAlert.playerName} (${newAlert.teamId}) [${systemNo}] - ${details}`
           },
           ...(prev?.systemLogs || [])
         ]
@@ -424,7 +446,7 @@ export default function App() {
 
   // Proctoring & Anti-Cheat Listeners (Fullscreen exit, Tab switch, Window blur, Navigation)
   useEffect(() => {
-    if (gameState?.phase !== 'CIVILIAN_PHASE') return;
+    if (gameState?.phase !== 'CIVILIAN_PHASE' || isAdmin) return;
 
     // Check fullscreen state
     const handleFullscreenChange = () => {
@@ -476,7 +498,7 @@ export default function App() {
       window.removeEventListener('blur', handleWindowBlur);
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
-  }, [gameState?.phase, myTeam?.name]);
+  }, [gameState?.phase, myTeam?.name, isAdmin]);
 
   // Save gameState and myTeam continuously so reload maintains all progress
   useEffect(() => {
@@ -490,11 +512,10 @@ export default function App() {
     }
   }, [gameState, myTeam?.score]);
 
-  // Client-side timer tick: tracks elapsed duration and countdown timer
+  // Client-side stopwatch tick: tracks elapsed duration upwards
   useEffect(() => {
     if (gameState?.phase === 'CIVILIAN_PHASE' && !gameState.isPaused) {
       const interval = setInterval(() => {
-        // Update elapsed time (how many minutes/seconds the game took)
         const savedStart = localStorage.getItem('cyber_mafia_start_time');
         if (savedStart) {
           const diff = Math.max(0, Math.floor((Date.now() - Number(savedStart)) / 1000));
@@ -502,32 +523,66 @@ export default function App() {
         } else {
           setElapsedSeconds(prev => prev + 1);
         }
-
-        // Update countdown timer if active
-        setGameState(prev => {
-          if (!prev) return prev;
-          if (prev.timer <= 1) {
-            return { ...prev, timer: 0 };
-          }
-          return { ...prev, timer: prev.timer - 1 };
-        });
       }, 1000);
       return () => clearInterval(interval);
     }
   }, [gameState?.phase, gameState?.isPaused]);
 
   // Handler: Join Team (Works standalone and syncs over API/socket)
-  const handleJoinTeam = async (playerName, teamId) => {
+  const handleJoinTeam = async (playerName, teamId, systemNo, teamName) => {
+    const finalSystemNo = systemNo || localStorage.getItem('cyber_mafia_system_no') || 'SYS-01';
+    const finalTeamName = teamName || localStorage.getItem('cyber_mafia_team_name') || `Squad ${teamId}`;
+
     localStorage.setItem('cyber_mafia_team_id', teamId);
     localStorage.setItem('cyber_mafia_player_name', playerName);
+    localStorage.setItem('cyber_mafia_system_no', finalSystemNo);
+    localStorage.setItem('cyber_mafia_team_name', finalTeamName);
 
     const targetSuspect = gameState?.teams?.find(t => t.id === teamId) || INITIAL_SUSPECTS.find(s => s.id === teamId) || INITIAL_SUSPECTS[0];
-    setMyTeam({
+    const newTeam = {
       ...targetSuspect,
-      name: playerName ? `${targetSuspect.name} [${playerName}]` : targetSuspect.name,
-      playerName: playerName || targetSuspect.name,
+      id: teamId,
+      name: finalTeamName,
+      role: 'CIVILIAN',
+      playerName,
+      systemNo: finalSystemNo,
+      score: myTeam?.score || 0,
+      integrity: 100,
       visibleEvidence: ALL_EVIDENCE_FILES.filter(e => (gameState?.unlockedEvidenceBatches || [1]).includes(e.batch))
+    };
+    setMyTeam(newTeam);
+
+    // Record login in chronological audit trail
+    const loginAudit = {
+      id: 'LOGIN-' + Date.now(),
+      timestamp: new Date().toLocaleTimeString(),
+      category: 'LOGIN',
+      playerName,
+      systemNo: finalSystemNo,
+      teamId,
+      teamName: finalTeamName,
+      message: `[LOGIN] Investigator ${playerName} logged in on terminal ${finalSystemNo} (Squad: ${finalTeamName} [${teamId}])`
+    };
+
+    setAuditLogs(prev => {
+      const updated = [loginAudit, ...prev];
+      try {
+        localStorage.setItem('cyber_mafia_audit_trail', JSON.stringify(updated));
+      } catch (e) {}
+      return updated;
     });
+
+    try {
+      fetch('/api/game-action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'PLAYER_LOGIN',
+          sessionId,
+          payload: { playerName, systemNo: finalSystemNo, teamId, teamName: finalTeamName }
+        })
+      }).catch(() => {});
+    } catch (_) {}
 
     try {
       const res = await fetch('/api/session', {
@@ -541,11 +596,11 @@ export default function App() {
         })
       });
       const data = await res.json();
-      if (data.team) setMyTeam(data.team);
+      if (data.team) setMyTeam(prev => ({ ...prev, ...data.team, systemNo: finalSystemNo, name: finalTeamName }));
       if (data.state) setGameState(data.state);
     } catch (e) {
       if (socket && socket.connected) {
-        socket.emit('join_lobby', { playerName, teamId, isAdmin });
+        socket.emit('join_lobby', { playerName, teamId, systemNo: finalSystemNo, teamName: finalTeamName, isAdmin });
       }
     }
   };
@@ -561,16 +616,17 @@ export default function App() {
     setElapsedSeconds(Math.max(0, Math.floor((Date.now() - Number(startTs)) / 1000)));
     playClick();
 
-    // Enforce Fullscreen mode on start
-    enterFullscreen();
+    // Enforce Fullscreen mode on start if not admin
+    if (!isAdmin) {
+      enterFullscreen();
+    }
 
     // In local standalone mode, immediately start investigation
     setGameState(prev => {
       const next = {
         ...prev,
         phase: 'CIVILIAN_PHASE',
-        status: 'RUNNING',
-        timer: prev?.timer > 0 ? prev.timer : 240
+        status: 'RUNNING'
       };
       try {
         localStorage.setItem('cyber_mafia_game_state', JSON.stringify(next));
@@ -582,30 +638,71 @@ export default function App() {
       socket.emit('start_game');
     }
 
-    const keyToUse = adminKey.trim() || localStorage.getItem('cyber_mafia_admin_key') || '';
-    if (keyToUse) {
-      setIsStartingGame(true);
-      try {
-        const res = await fetch('/api/game-action', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-admin-key': keyToUse
-          },
-          body: JSON.stringify({ action: 'START_GAME', sessionId })
-        });
-        const data = await res.json().catch(() => ({}));
-        if (res.ok && data.success) {
-          playSuccess();
-          showToast('Investigation commenced!', 'SUCCESS');
-          await refreshGameState();
-        }
-      } catch (e) {
-        console.warn('API start_game fallback used local state:', e);
-      } finally {
-        setIsStartingGame(false);
-      }
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (adminKey) headers['x-admin-key'] = adminKey.trim();
+      fetch('/api/game-action', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ action: 'START_GAME', sessionId })
+      }).catch(() => {});
+    } catch (e) {}
+
+    showToast('Investigation commenced! Stopwatch active. Fullscreen locked.', 'SUCCESS');
+  };
+
+  // Handler: Reset Entire Game (Admin Power: erase all saved progress & reset stopwatch)
+  const handleResetEntireGame = async () => {
+    if (!window.confirm('⚠️ CONFIRM GAME RESET: This will completely wipe all saved player progress, clear all code buffers, erase submitted answers, reset the stopwatch back to 00:00, and return to the lobby.\n\nAre you sure you want to proceed?')) {
+      return;
     }
+
+    try {
+      localStorage.removeItem('cyber_mafia_game_state');
+      localStorage.removeItem('cyber_mafia_code_buffers');
+      localStorage.removeItem('cyber_mafia_terminal_outputs');
+      localStorage.removeItem('cyber_mafia_submitted_answers');
+      localStorage.removeItem('cyber_mafia_start_time');
+      localStorage.removeItem('cyber_mafia_security_alerts');
+      localStorage.removeItem('cyber_mafia_audit_trail');
+    } catch (_) {}
+
+    setElapsedSeconds(0);
+    setSecurityAlerts([]);
+    setAuditLogs([]);
+    const fresh = createInitialGameState();
+    setGameState(fresh);
+    setShowAdminPanel(false);
+
+    try {
+      await fetch('/api/game-action', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-key': (adminKey || '').trim()
+        },
+        body: JSON.stringify({
+          action: 'ADMIN_RESET_GAME',
+          sessionId
+        })
+      });
+    } catch (_) {}
+
+    if (socket && socket.connected) {
+      socket.emit('admin_action', { action: 'RESET_GAME' });
+    }
+
+    showToast('Match completely reset. All saved progress erased and stopwatch reset to 00:00.', 'SUCCESS');
+  };
+
+  // Handler: Exit to Lobby (Admin can exit or move anytime)
+  const handleExitToLobby = () => {
+    setGameState(prev => ({
+      ...prev,
+      phase: 'LOBBY'
+    }));
+    setShowAdminPanel(false);
+    showToast('Returned to main lobby.', 'INFO');
   };
 
   // Handler: Request Attack Challenge (for Hacker role)
@@ -708,8 +805,20 @@ export default function App() {
       const currentStg = chal.stageNumber || stageNumber || 1;
       const nextStage = Math.min(currentStg + 1, 5);
       const nextBatch = Math.min(chal.unlocksEvidenceBatch || (currentStg + 1), 6);
+      const points = chal.rewardScore || 100;
+      const newScore = (myTeam?.score || 0) + points;
 
-      showToast(`Stage ${currentStg} Solved! +${chal.rewardScore} PTS. Evidence Batch ${nextBatch} Unlocked!`, 'SUCCESS');
+      showToast(`Stage ${currentStg} Solved! +${points} PTS. Evidence Batch ${nextBatch} Unlocked!`, 'SUCCESS');
+
+      setMyTeam(prev => {
+        const currentBatches = gameState?.unlockedEvidenceBatches || [1];
+        const allBatches = currentBatches.includes(nextBatch) ? currentBatches : [...currentBatches, nextBatch];
+        return {
+          ...prev,
+          score: newScore,
+          visibleEvidence: ALL_EVIDENCE_FILES.filter(e => allBatches.includes(e.batch))
+        };
+      });
 
       setGameState(prev => {
         const completed = prev?.completedStages || [];
@@ -717,33 +826,55 @@ export default function App() {
         const batches = prev?.unlockedEvidenceBatches || [1];
         const newBatches = batches.includes(nextBatch) ? batches : [...batches, nextBatch];
 
-        return {
+        const updatedTeams = (prev?.teams || []).map(t => {
+          if (t.id === myTeam?.id || t.id === 'C01') {
+            return { ...t, score: newScore, completedLevels: newCompleted.length };
+          }
+          return t;
+        });
+
+        const next = {
           ...prev,
           currentStage: nextStage,
           completedStages: newCompleted,
           unlockedEvidenceBatches: newBatches,
+          teams: updatedTeams,
+          score: newScore,
           systemLogs: [
             {
               id: 'LOG-' + Date.now(),
               timestamp: new Date().toLocaleTimeString(),
               type: 'FORENSIC_SOLVE',
               source: `STAGE_${currentStg}`,
-              message: `Stage ${currentStg} (${chal.title}) solved! Output "${answer}" verified. Unlocked Evidence Batch ${nextBatch}.`
+              message: `Stage ${currentStg} (${chal.title}) solved! Output "${answer}" verified. Unlocked Evidence Batch ${nextBatch}. +${points} PTS.`
             },
             ...(prev?.systemLogs || [])
           ]
         };
+
+        try {
+          localStorage.setItem('cyber_mafia_game_state', JSON.stringify(next));
+        } catch (e) {}
+        return next;
       });
 
-      setMyTeam(prev => {
-        const nextBatch = Math.min(chal.unlocksEvidenceBatch || ((chal.stageNumber || 1) + 1), 6);
-        const currentBatches = gameState?.unlockedEvidenceBatches || [1];
-        const allBatches = currentBatches.includes(nextBatch) ? currentBatches : [...currentBatches, nextBatch];
-        return {
-          ...prev,
-          score: (prev?.score || 0) + (chal.rewardScore || 100),
-          visibleEvidence: ALL_EVIDENCE_FILES.filter(e => allBatches.includes(e.batch))
-        };
+      // Append to chronological audit trail
+      const solveAudit = {
+        id: 'SOLVE-' + Date.now(),
+        timestamp: new Date().toLocaleTimeString(),
+        category: 'STAGE_SOLVED',
+        playerName: myTeam?.playerName || 'Investigator',
+        systemNo: myTeam?.systemNo || localStorage.getItem('cyber_mafia_system_no') || 'SYS-DEFAULT',
+        teamId: myTeam?.id || 'C01',
+        teamName: myTeam?.name || 'Cyber Alpha',
+        message: `Stage ${currentStg} (${chal.title}) solved! Verified answer: "${answer}". +${points} PTS awarded.`
+      };
+      setAuditLogs(prev => {
+        const updated = [solveAudit, ...prev];
+        try {
+          localStorage.setItem('cyber_mafia_audit_trail', JSON.stringify(updated));
+        } catch (e) {}
+        return updated;
       });
     } else {
       playError();
@@ -813,7 +944,7 @@ export default function App() {
       const isQ1 = answers.q1 === 'D'; // Elena Ward
       const isQ2 = answers.q2 === 'A'; // Poison administered through drink
       const isQ3 = answers.q3 === 'B'; // Prevent exposing unauthorized exports
-      const isQ4 = answers.q4 === 'D'; // No accomplice
+      const isQ4 = answers.q4 === 'D' || answers.q4 === 'C'; // C (Felix Grant - Bribed to loop CCTV) or D (Elena acted alone)
       const isQ5 = Array.isArray(answers.q5) && ['A', 'B', 'C', 'D'].every(o => answers.q5.includes(o)) && answers.q5.length === 4;
 
       const score = (isQ1 ? 1 : 0) + (isQ2 ? 1 : 0) + (isQ3 ? 1 : 0) + (isQ4 ? 1 : 0) + (isQ5 ? 1 : 0);
@@ -1037,6 +1168,7 @@ export default function App() {
             isOpen={showAdminPanel}
             onClose={() => setShowAdminPanel(false)}
             gameState={gameState}
+            myTeam={myTeam}
             sessionId={sessionId}
             adminKey={adminKey}
             isAdmin={isAdmin}
@@ -1044,10 +1176,22 @@ export default function App() {
             onAdminLogout={handleAdminLogout}
             authError={authError}
             securityAlerts={securityAlerts}
+            auditLogs={auditLogs}
             onClearSecurityAlerts={() => {
               setSecurityAlerts([]);
-              localStorage.removeItem('cyber_mafia_security_alerts');
+              try {
+                localStorage.removeItem('cyber_mafia_security_alerts');
+              } catch (e) {}
             }}
+            onClearAuditLogs={() => {
+              setAuditLogs([]);
+              try {
+                localStorage.removeItem('cyber_mafia_audit_trail');
+              } catch (e) {}
+            }}
+            onResetEntireGame={handleResetEntireGame}
+            onExitToLobby={handleExitToLobby}
+            elapsedSeconds={elapsedSeconds}
             onAdminAction={() => {
               if (socket && socket.connected) {
                 socket.emit('admin_action', { action: 'REFRESH' });
@@ -1065,9 +1209,12 @@ export default function App() {
             onClose={() => setShowLeaderboard(false)}
             sessionId={sessionId}
             initialLeaderboard={gameState?.leaderboard || []}
+            gameState={gameState}
+            myTeam={myTeam}
             sessionStatus={gameState?.status || 'LOBBY'}
             isPaused={gameState?.isPaused || false}
             timing={gameState?.timing}
+            elapsedSeconds={elapsedSeconds}
             realtimeStatus={realtimeStatus}
           />
         )}
@@ -1123,23 +1270,35 @@ export default function App() {
             </div>
           )}
 
-          {/* Active Gameplay Time Taken (Elapsed) */}
-          <div className="flex items-center gap-2.5 bg-slate-950 px-3.5 py-1.5 rounded-xl border border-slate-800 shadow-inner" title="Elapsed match duration">
-            <Clock className={`w-4 h-4 ${gameState.isPaused ? 'text-slate-500' : 'text-amber-400 animate-pulse'}`} />
+          {/* Investigation Stopwatch */}
+          <div className="flex items-center gap-2.5 bg-slate-950 px-3.5 py-1.5 rounded-xl border border-slate-800 shadow-inner" title="Active investigation stopwatch">
+            <Clock className={`w-4 h-4 ${gameState?.isPaused ? 'text-slate-500' : 'text-amber-400 animate-pulse'}`} />
             <div className="flex flex-col text-left">
-              <span className="text-[9px] text-slate-500 font-bold tracking-wider leading-none">TIME TAKEN</span>
-              <span className="text-sm font-black text-slate-100 font-mono">
+              <span className="text-[9px] text-slate-500 font-bold tracking-wider leading-none">STOPWATCH</span>
+              <span className="text-sm font-black text-white font-mono">
                 {formatMinutesSeconds(elapsedSeconds)}
               </span>
             </div>
           </div>
 
-          {/* Phase Countdown Gauge (if remaining timer exists) */}
-          {gameState?.timer > 0 && (
-            <div className="hidden sm:flex items-center gap-1.5 bg-slate-950/80 px-2.5 py-1.5 rounded-xl border border-slate-800 text-xs">
-              <span className="text-slate-500 text-[10px]">REMAINING:</span>
-              <span className="font-mono text-cyan-300 font-bold">{formatMinutesSeconds(gameState.timer)}</span>
-            </div>
+          {/* Active Station Display */}
+          <div className="hidden lg:flex items-center gap-2 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 text-xs shadow-inner">
+            <Monitor className="w-3.5 h-3.5 text-cyan-400" />
+            <span className="text-slate-300 font-bold">{myTeam?.name || 'Cyber Alpha'}</span>
+            <span className="text-slate-600">•</span>
+            <span className="text-amber-300 font-mono font-bold">{localStorage.getItem('cyber_mafia_system_no') || myTeam?.systemNo || 'SYS-01'}</span>
+          </div>
+
+          {/* Admin Exit to Lobby Button */}
+          {isAdmin && (
+            <button
+              onClick={handleExitToLobby}
+              className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-950 border border-slate-800 hover:border-cyan-500 rounded-xl text-slate-300 hover:text-cyan-300 text-xs font-bold cursor-pointer"
+              title="Return to lobby"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Lobby</span>
+            </button>
           )}
 
           {/* Leaderboard Button */}
@@ -1262,6 +1421,7 @@ export default function App() {
           isOpen={showAdminPanel}
           onClose={() => setShowAdminPanel(false)}
           gameState={gameState}
+          myTeam={myTeam}
           sessionId={sessionId}
           adminKey={adminKey}
           isAdmin={isAdmin}
@@ -1269,12 +1429,22 @@ export default function App() {
           onAdminLogout={handleAdminLogout}
           authError={authError}
           securityAlerts={securityAlerts}
+          auditLogs={auditLogs}
           onClearSecurityAlerts={() => {
             setSecurityAlerts([]);
             try {
               localStorage.removeItem('cyber_mafia_security_alerts');
             } catch (e) {}
           }}
+          onClearAuditLogs={() => {
+            setAuditLogs([]);
+            try {
+              localStorage.removeItem('cyber_mafia_audit_trail');
+            } catch (e) {}
+          }}
+          onResetEntireGame={handleResetEntireGame}
+          onExitToLobby={handleExitToLobby}
+          elapsedSeconds={elapsedSeconds}
           onAdminAction={() => {
             if (socket && socket.connected) {
               socket.emit('admin_action', { action: 'REFRESH' });
@@ -1291,9 +1461,12 @@ export default function App() {
           onClose={() => setShowLeaderboard(false)}
           sessionId={sessionId}
           initialLeaderboard={gameState?.leaderboard || []}
+          gameState={gameState}
+          myTeam={myTeam}
           sessionStatus={gameState?.status || 'RUNNING'}
           isPaused={gameState?.isPaused || false}
           timing={gameState?.timing}
+          elapsedSeconds={elapsedSeconds}
           realtimeStatus={realtimeStatus}
         />
       )}
@@ -1309,8 +1482,8 @@ export default function App() {
         visibleEvidence={myTeam?.visibleEvidence || []}
       />
 
-      {/* Anti-Cheat Fullscreen Enforcement Modal */}
-      {gameState?.phase === 'CIVILIAN_PHASE' && !isFullscreen && (
+      {/* Anti-Cheat Fullscreen Enforcement Modal (Disabled for Admin) */}
+      {gameState?.phase === 'CIVILIAN_PHASE' && !isFullscreen && !isAdmin && (
         <div className="fixed inset-0 z-[9999] bg-black/95 backdrop-blur-xl flex flex-col items-center justify-center p-6 text-center font-mono">
           <div className="max-w-md w-full bg-slate-900 border-2 border-rose-500 rounded-2xl p-6 shadow-2xl space-y-4">
             <div className="w-16 h-16 rounded-2xl bg-rose-950 border-2 border-rose-500 flex items-center justify-center text-rose-400 mx-auto animate-bounce">

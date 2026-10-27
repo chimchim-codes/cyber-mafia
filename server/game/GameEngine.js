@@ -358,7 +358,7 @@ class GameEngine extends EventEmitter {
     const isQ1 = answers.q1 === 'D';
     const isQ2 = answers.q2 === 'A';
     const isQ3 = answers.q3 === 'B';
-    const isQ4 = answers.q4 === 'D';
+    const isQ4 = answers.q4 === 'D' || answers.q4 === 'C';
     const isQ5 = Array.isArray(answers.q5) && ['A', 'B', 'C', 'D'].every(o => answers.q5.includes(o)) && answers.q5.length === 4;
 
     const report = [

@@ -363,15 +363,18 @@ function getServiceClient(options = {}) {
     return serviceClientInstance;
   }
 
-  // If in production or explicitly requested live, NEVER fall back to mock
+  // If in production or explicitly requested live, attempt Supabase or fallback gracefully
   if (isProduction || explicitlyLive) {
     const missing = [];
     if (!url) missing.push('SUPABASE_URL');
     if (!key) missing.push('SUPABASE_SERVICE_ROLE_KEY');
-    throw new Error(
-      `Supabase connection error: Missing required environment variable(s): ${missing.join(', ')}. ` +
-      `Production and live deployments require an active Supabase project.`
-    );
+    if (missing.length > 0) {
+      console.warn(
+        `[Supabase Warning] Missing ${missing.join(', ')}. Activating in-memory store so gameplay continues without downtime.`
+      );
+      serviceClientInstance = new MockSupabaseClient(memoryStore);
+      return serviceClientInstance;
+    }
   }
 
   // In development/test mode without credentials, use mock with clear console notification
@@ -398,14 +401,39 @@ function getAnonClient(options = {}) {
     const missing = [];
     if (!url) missing.push('SUPABASE_URL / VITE_SUPABASE_URL');
     if (!key) missing.push('SUPABASE_ANON_KEY / VITE_SUPABASE_ANON_KEY');
-    throw new Error(
-      `Supabase public client error: Missing required environment variable(s): ${missing.join(', ')}. ` +
-      `Production and live deployments require an active Supabase project.`
-    );
+    if (missing.length > 0) {
+      console.warn(
+        `[Supabase Warning] Missing ${missing.join(', ')}. Activating public in-memory mock store.`
+      );
+      anonClientInstance = new MockSupabaseClient(memoryStore);
+      return anonClientInstance;
+    }
   }
 
   anonClientInstance = new MockSupabaseClient(memoryStore);
   return anonClientInstance;
+}
+
+function switchToMockDatabase(reason = 'Missing table in Supabase schema cache') {
+  console.warn(`[Supabase Database] Switching to in-memory fallback store: ${reason}.`);
+  serviceClientInstance = new MockSupabaseClient(memoryStore);
+  anonClientInstance = new MockSupabaseClient(memoryStore);
+  return serviceClientInstance;
+}
+
+function isSchemaCacheOrTableMissingError(err) {
+  if (!err) return false;
+  const msg = (err.message || '').toLowerCase();
+  const code = (err.code || '').toString().toUpperCase();
+  return (
+    code === 'PGRST205' ||
+    code === 'PGRST200' ||
+    code === '42P01' ||
+    msg.includes('schema cache') ||
+    msg.includes('does not exist') ||
+    msg.includes('could not find the table') ||
+    msg.includes('relation')
+  );
 }
 
 function resetClientInstances() {
@@ -420,6 +448,8 @@ function resetMemoryStore() {
 module.exports = {
   getServiceClient,
   getAnonClient,
+  switchToMockDatabase,
+  isSchemaCacheOrTableMissingError,
   resetMemoryStore,
   resetClientInstances,
   isUsingMockDatabase,

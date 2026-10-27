@@ -56,8 +56,13 @@ export default function CivilianDashboard({
         {/* Status Indicators */}
         <div className="flex items-center gap-3 text-xs font-mono">
           <div className="bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
-            <span className="text-slate-500 block text-[10px]">TIME TAKEN</span>
+            <span className="text-slate-500 block text-[10px]">STOPWATCH</span>
             <span className="text-amber-300 font-bold font-mono">{formatMinutesSeconds(elapsedSeconds)}</span>
+          </div>
+
+          <div className="hidden sm:block bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
+            <span className="text-slate-500 block text-[10px]">STATION</span>
+            <span className="text-cyan-300 font-bold font-mono">{localStorage.getItem('cyber_mafia_system_no') || myTeam?.systemNo || 'SYS-01'}</span>
           </div>
 
           <div className="bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
