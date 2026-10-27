@@ -7,7 +7,7 @@ import {
   ShieldAlert, Eye, Play, Pause, RefreshCw, Zap, 
   Bot, Settings, Skull, Shield, X, AlertTriangle, Download, 
   History, RotateCcw, CheckCircle2, FileSpreadsheet, Lock, LogOut, Check,
-  Clock, Monitor, Users, Search, ListFilter, Trash2
+  Clock, Monitor, Users, Search, ListFilter, Trash2, Trophy, Bell
 } from 'lucide-react';
 import { playClick, playSuccess, playError } from '../utils/soundEffects';
 
@@ -29,7 +29,9 @@ export default function AdminPanel({
   onClearAuditLogs,
   onResetEntireGame,
   onExitToLobby,
-  elapsedSeconds = 0
+  elapsedSeconds = 0,
+  submissionAlerts = [],
+  onClearSubmissionAlerts
 }) {
   const [adminKeyInput, setAdminKeyInput] = useState(adminKey || '');
   const [isVerifying, setIsVerifying] = useState(false);
@@ -46,6 +48,10 @@ export default function AdminPanel({
   const [loadingSnapshots, setLoadingSnapshots] = useState(false);
   const [snapshotActionMessage, setSnapshotActionMessage] = useState(null);
 
+  // Live Leaderboard state in Admin Panel
+  const [liveLeaderboard, setLiveLeaderboard] = useState([]);
+  const [loadingLeaderboard, setLoadingLeaderboard] = useState(false);
+
   // Restore Modal State
   const [selectedSnapshot, setSelectedSnapshot] = useState(null);
   const [restoreReason, setRestoreReason] = useState('Authorized administrative rollback to validated checkpoint.');
@@ -56,11 +62,34 @@ export default function AdminPanel({
   const [isResetting, setIsResetting] = useState(false);
 
   // Active Admin Tab
-  const [activeTab, setActiveTab] = useState('AUDIT'); // AUDIT, LIFECYCLE, SECURITY, TEAMS, RECOVERY, INJECT
+  const [activeTab, setActiveTab] = useState('AUDIT'); // AUDIT, LIFECYCLE, LEADERBOARD, SECURITY, TEAMS, RECOVERY, INJECT
 
   // Audit filter state
   const [auditFilter, setAuditFilter] = useState('ALL'); // ALL, LOGIN, BREACH, SOLVE
   const [auditSearch, setAuditSearch] = useState('');
+
+  const fetchLiveLeaderboard = async () => {
+    setLoadingLeaderboard(true);
+    try {
+      const res = await fetch(`/api/leaderboard?sessionId=${encodeURIComponent(sessionId)}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.leaderboard) setLiveLeaderboard(data.leaderboard);
+      }
+    } catch (e) {
+      console.warn('Failed to fetch admin leaderboard:', e);
+    } finally {
+      setLoadingLeaderboard(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'LEADERBOARD' && isAdmin) {
+      fetchLiveLeaderboard();
+      const interval = setInterval(fetchLiveLeaderboard, 4000);
+      return () => clearInterval(interval);
+    }
+  }, [activeTab, isAdmin, sessionId]);
 
   useEffect(() => {
     setAdminKeyInput(adminKey || '');
@@ -417,6 +446,40 @@ export default function AdminPanel({
           </div>
         ) : (
           <>
+            {/* Real-Time Team Accusation Submission Alerts */}
+            {submissionAlerts?.length > 0 && (
+              <div className="p-3.5 bg-amber-950/70 border-2 border-amber-500 rounded-xl space-y-2 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-amber-300 flex items-center gap-1.5">
+                    <Bell className="w-4 h-4 text-amber-400 animate-bounce" />
+                    {submissionAlerts.length} CASE ACCUSATION SUBMISSION{submissionAlerts.length > 1 ? 'S' : ''} RECEIVED
+                  </span>
+                  {onClearSubmissionAlerts && (
+                    <button
+                      onClick={onClearSubmissionAlerts}
+                      className="text-[10px] text-amber-400 hover:text-white underline cursor-pointer"
+                    >
+                      Dismiss Alerts
+                    </button>
+                  )}
+                </div>
+                <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+                  {submissionAlerts.map((sub, idx) => (
+                    <div key={idx} className="bg-black/60 p-2.5 rounded-lg border border-amber-800/80 flex items-center justify-between font-mono text-[11px]">
+                      <div>
+                        <span className="font-bold text-cyan-300">{sub.teamName || sub.teamId}</span> ({sub.teamId}) filed accusation at <span className="text-amber-300 font-bold">{new Date(sub.timestamp || Date.now()).toLocaleTimeString()}</span>
+                      </div>
+                      <div className={`font-bold px-2.5 py-0.5 rounded text-[10px] uppercase ${
+                        sub.isSolved ? 'bg-emerald-950 text-emerald-300 border border-emerald-600' : 'bg-rose-950 text-rose-300 border border-rose-600'
+                      }`}>
+                        Score: {sub.score}/5 {sub.isSolved ? '— CONVICTED' : '— INCORRECT'}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Tab Navigation */}
             <div className="flex gap-2 border-b border-slate-800 pb-2 text-xs flex-wrap">
               {[
@@ -426,6 +489,7 @@ export default function AdminPanel({
                   isHighlight: true 
                 },
                 { id: 'LIFECYCLE', label: '⏱️ Stopwatch & Lifecycle' },
+                { id: 'LEADERBOARD', label: '🏆 Live Standings & Times' },
                 { 
                   id: 'SECURITY', 
                   label: `🚨 Proctoring Alerts (${allAlerts.length})`,
@@ -452,6 +516,88 @@ export default function AdminPanel({
                 </button>
               ))}
             </div>
+
+            {/* TAB: LIVE LEADERBOARD (Admin Only) */}
+            {activeTab === 'LEADERBOARD' && (
+              <div className="space-y-4">
+                <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-900 pb-3">
+                    <div className="flex items-center gap-2">
+                      <Trophy className="w-5 h-5 text-amber-400" />
+                      <div>
+                        <h4 className="text-sm font-bold text-slate-100">Live Squad Standings & Performance Times</h4>
+                        <p className="text-[11px] text-slate-400">
+                          Authoritative admin leaderboard updating in real-time based on rounds, completed stages, and elapsed playing times.
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => { playClick(); fetchLiveLeaderboard(); }}
+                      className="px-3 py-1.5 bg-slate-900 border border-slate-700 hover:border-slate-500 rounded-lg text-xs text-slate-300 flex items-center gap-1.5 cursor-pointer shadow"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 text-cyan-400 ${loadingLeaderboard ? 'animate-spin' : ''}`} />
+                      Refresh Standings
+                    </button>
+                  </div>
+
+                  {/* Leaderboard Table */}
+                  <div className="space-y-2 max-h-[50vh] overflow-y-auto pr-1">
+                    {(liveLeaderboard.length > 0 ? liveLeaderboard : (gameState?.leaderboard || [])).map((team, idx) => (
+                      <div
+                        key={team.teamId}
+                        className={`p-3 rounded-xl border flex flex-wrap items-center justify-between gap-3 text-xs font-mono ${
+                          idx === 0 ? 'bg-amber-950/30 border-amber-500/80 shadow-sm shadow-amber-950' :
+                          idx === 1 ? 'bg-slate-800/40 border-slate-600' :
+                          idx === 2 ? 'bg-amber-900/10 border-amber-800/40' :
+                          'bg-slate-900/60 border-slate-800'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <span className="w-7 h-7 rounded-lg bg-slate-950 border border-slate-700 flex items-center justify-center font-bold text-amber-400 shrink-0">
+                            #{team.rank || idx + 1}
+                          </span>
+                          <div>
+                            <div className="font-bold text-white flex items-center gap-2">
+                              <span>{team.teamName}</span>
+                              <span className="text-[10px] text-slate-500">({team.teamId})</span>
+                            </div>
+                            <div className="text-[10px] text-slate-400 flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
+                              <span className="text-cyan-300 font-bold">Round/Stage: {team.currentRound || (team.completedLevels || 0) + 1} / 5</span>
+                              <span>•</span>
+                              <span>Stages Completed: {team.completedLevels || 0}</span>
+                              <span>•</span>
+                              <span className="text-amber-300 font-bold flex items-center gap-1">
+                                <Clock className="w-3 h-3" /> Time: {team.timeFormatted || '0s'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="text-right flex items-center gap-3 ml-auto">
+                          <div>
+                            <div className="font-black text-sm text-emerald-400">
+                              +{team.score} PTS
+                            </div>
+                            <div className="flex items-center justify-end gap-1.5 mt-0.5">
+                              {team.hasSubmitted && (
+                                <span className="text-[9px] px-1.5 py-0.5 rounded font-bold uppercase bg-cyan-950 text-cyan-300 border border-cyan-800">
+                                  SUBMITTED ({team.accusationScore ?? 0}/5)
+                                </span>
+                              )}
+                              <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${
+                                team.isEliminated ? 'bg-rose-950 text-rose-400' : 'bg-emerald-950 text-emerald-400'
+                              }`}>
+                                {team.completionStatus || 'ACTIVE'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* TAB: CHRONOLOGICAL ACTIVITY & PROCTORING AUDIT */}
             {activeTab === 'AUDIT' && (

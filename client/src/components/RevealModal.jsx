@@ -1,14 +1,16 @@
 // client/src/components/RevealModal.jsx
-import React, { useEffect } from 'react';
-import { Skull, ShieldCheck, Download, Clock, CheckCircle2, XCircle } from 'lucide-react';
+import React, { useEffect, useRef } from 'react';
+import { Skull, ShieldCheck, Download, Clock, CheckCircle2, XCircle, FileText } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { playSuccess, playError } from '../utils/soundEffects';
+import { generateTribunalAccusationPDF } from '../utils/pdfGenerator';
 
-export default function RevealModal({ revealResult, timer, onClose }) {
+export default function RevealModal({ revealResult, timer, onClose, myTeam }) {
   if (!revealResult) return null;
 
   const isSolved = revealResult.isSolved;
   const ts = revealResult.timestampInfo;
+  const hasAutoDownloaded = useRef(false);
 
   useEffect(() => {
     if (isSolved) {
@@ -21,19 +23,24 @@ export default function RevealModal({ revealResult, timer, onClose }) {
     } else {
       playError();
     }
-  }, [isSolved]);
 
-  const handleDownloadReceipt = () => {
-    if (!ts?.reportText) return;
-    const blob = new Blob([ts.reportText], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'accusation_timestamp.txt';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    // Auto-download PDF report upon verdict display
+    if (!hasAutoDownloaded.current) {
+      hasAutoDownloaded.current = true;
+      try {
+        generateTribunalAccusationPDF(revealResult, myTeam);
+      } catch (e) {
+        console.warn('PDF auto-download error:', e);
+      }
+    }
+  }, [isSolved, revealResult, myTeam]);
+
+  const handleDownloadPdf = () => {
+    try {
+      generateTribunalAccusationPDF(revealResult, myTeam);
+    } catch (e) {
+      console.warn('Failed to generate PDF:', e);
+    }
   };
 
   return (
@@ -65,28 +72,30 @@ export default function RevealModal({ revealResult, timer, onClose }) {
           {revealResult.penaltyMessage}
         </div>
 
-        {/* Desktop Timestamp Receipt Card */}
+        {/* Auto-Downloaded PDF Receipt Notice & Manual Re-download */}
         {ts && (
-          <div className="p-3 bg-slate-950/90 rounded-xl border border-cyan-900/60 text-left text-xs space-y-1.5">
+          <div className="p-3 bg-slate-950/90 rounded-xl border border-cyan-900/60 text-left text-xs space-y-2">
             <div className="flex items-center justify-between text-[10px] text-cyan-400 font-bold uppercase border-b border-slate-900 pb-1">
               <span className="flex items-center gap-1">
-                <Clock className="w-3 h-3" /> Timestamp Report
+                <Clock className="w-3 h-3" /> Investigation Telemetry
               </span>
-              <span className="text-emerald-400">Printed to Desktop</span>
+              <span className="text-emerald-400 font-bold flex items-center gap-1">
+                <CheckCircle2 className="w-3 h-3" /> PDF Auto-Downloaded
+              </span>
             </div>
 
             <div className="text-[11px] text-slate-400 space-y-0.5 font-mono">
               <div>Started: <span className="text-slate-200">{ts.startTimeStr || ts.startTime}</span></div>
-              <div>Stopped: <span className="text-slate-200">{ts.stopTimeStr || ts.stopTime}</span></div>
-              <div>Duration: <span className="text-amber-400 font-bold">{ts.durationStr}</span></div>
+              <div>Submitted: <span className="text-slate-200">{ts.stopTimeStr || ts.stopTime}</span></div>
+              <div>Total Time Taken: <span className="text-amber-400 font-bold">{ts.durationStr}</span></div>
             </div>
 
             <button
-              onClick={handleDownloadReceipt}
-              className="w-full mt-2 py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 rounded-lg text-[10px] uppercase font-bold flex items-center justify-center gap-1.5 cursor-pointer"
+              onClick={handleDownloadPdf}
+              className="w-full mt-2 py-2 bg-gradient-to-r from-cyan-700 to-blue-700 hover:from-cyan-600 hover:to-blue-600 text-white rounded-lg text-xs uppercase font-bold flex items-center justify-center gap-2 cursor-pointer shadow-md shadow-cyan-950"
             >
-              <Download className="w-3 h-3 text-cyan-400" />
-              Download accusation_timestamp.txt
+              <FileText className="w-3.5 h-3.5" />
+              Download Official Case Record (.PDF)
             </button>
           </div>
         )}

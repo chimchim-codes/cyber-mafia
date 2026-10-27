@@ -18,6 +18,7 @@ import RevealModal from './components/RevealModal';
 import GameChat from './components/GameChat';
 import AdminPanel from './components/AdminPanel';
 import LeaderboardView from './components/LeaderboardView';
+import { generateTribunalAccusationPDF } from './utils/pdfGenerator';
 
 import { 
   INITIAL_SUSPECTS, 
@@ -108,6 +109,15 @@ export default function App() {
   const [auditLogs, setAuditLogs] = useState(() => {
     try {
       const saved = localStorage.getItem('cyber_mafia_audit_trail');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [submissionAlerts, setSubmissionAlerts] = useState(() => {
+    try {
+      const saved = localStorage.getItem('cyber_mafia_submission_alerts');
       return saved ? JSON.parse(saved) : [];
     } catch {
       return [];
@@ -327,13 +337,31 @@ export default function App() {
     socket.on('accusation_verdict', (result) => {
       const verdict = result.revealResult || result;
       setCustomVerdict(verdict);
+      setMyTeam(prev => ({ ...prev, hasSubmittedAccusation: true }));
+      try {
+        generateTribunalAccusationPDF(verdict, myTeam);
+      } catch (err) {
+        console.warn('PDF auto-generation on socket verdict failed:', err);
+      }
       if (result.isSolved) {
         playSuccess();
-        showToast('MURDER SOLVED! Elena Ward convicted!', 'SUCCESS');
+        showToast('MURDER SOLVED! Elena Ward convicted! Case Record PDF downloaded.', 'SUCCESS');
       } else {
         playError();
-        showToast(`Accusation result: ${result.score}/5 correct`, 'ERROR');
+        showToast(`Accusation result: ${result.score}/5 correct. Case Record PDF downloaded.`, 'ERROR');
       }
+    });
+
+    socket.on('admin_submission_alert', (alertData) => {
+      setSubmissionAlerts(prev => {
+        const next = [alertData, ...prev];
+        try {
+          localStorage.setItem('cyber_mafia_submission_alerts', JSON.stringify(next.slice(0, 50)));
+        } catch (e) {}
+        return next;
+      });
+      playAlarm();
+      showToast(`🚨 TEAM ACCUSATION SUBMITTED: ${alertData.teamName || alertData.teamId} scored ${alertData.score}/5 (${alertData.isSolved ? 'SOLVED' : 'INCORRECT'})`, 'ERROR');
     });
 
     socket.on('action_error', ({ message }) => {
@@ -350,6 +378,7 @@ export default function App() {
       socket.off('ctf_lab_result');
       socket.off('location_hint_result');
       socket.off('accusation_verdict');
+      socket.off('admin_submission_alert');
       socket.off('action_error');
     };
   }, []);
@@ -916,6 +945,12 @@ export default function App() {
 
   // Handler: Submit Accusation (Supports both MCQ 5-question model and legacy suspect ID)
   const handleSubmitAccusation = async (answersOrSuspectId, attachedEvidenceIds, notes) => {
+    if (myTeam?.hasSubmittedAccusation) {
+      playError();
+      showToast('❌ SUBMISSION LOCKED: Your team has already submitted an accusation. Only 1 submission allowed.', 'ERROR');
+      return;
+    }
+
     playAlarm();
 
     if (typeof answersOrSuspectId === 'object' && answersOrSuspectId !== null && 'q1' in answersOrSuspectId) {
@@ -926,7 +961,7 @@ export default function App() {
       }
 
       try {
-        await fetch('/api/game-action', {
+        const res = await fetch('/api/game-action', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -936,9 +971,19 @@ export default function App() {
             payload: { answers }
           })
         });
+        const resData = await res.json();
+        if (resData.alreadySubmitted) {
+          playError();
+          showToast('❌ Submission rejected: Team has already submitted an accusation.', 'ERROR');
+          setMyTeam(prev => ({ ...prev, hasSubmittedAccusation: true }));
+          return;
+        }
       } catch (e) {
         // standalone fallback handled below
       }
+
+      // Mark team as submitted locally
+      setMyTeam(prev => ({ ...prev, hasSubmittedAccusation: true }));
 
       // Client-side verdict calculation fallback with Desktop Timestamp receipt
       const isQ1 = answers.q1 === 'D'; // Elena Ward
@@ -992,7 +1037,7 @@ export default function App() {
         actualRole: 'KILLER',
         penaltyMessage: isSolved
           ? `🚨 MURDER SOLVED! Elena Ward convicted of murdering Dr. Adrian Vale! +500 PTS awarded.`
-          : `❌ ACCUSATION INCORRECT: ${score}/5 questions correct. Review forensic evidence and try again.`,
+          : `❌ ACCUSATION INCORRECT: ${score}/5 questions correct. Official case record filed with Tribunal.`,
         timestampInfo: {
           startTime: startTime.toISOString(),
           stopTime: stopTime.toISOString(),
@@ -1006,16 +1051,27 @@ export default function App() {
 
       setCustomVerdict(verdict);
 
+      // Automatically generate & download the official forensic PDF
+      try {
+        generateTribunalAccusationPDF(verdict, {
+          ...(myTeam || {}),
+          hasSubmittedAccusation: true
+        });
+      } catch (pdfErr) {
+        console.error('PDF auto-download error:', pdfErr);
+      }
+
       if (isSolved) {
         playSuccess();
-        showToast('MURDER SOLVED! Elena Ward convicted!', 'SUCCESS');
-        setMyTeam(prev => ({ ...prev, score: (prev?.score || 0) + 500 }));
+        showToast('MURDER SOLVED! Elena Ward convicted! Case Record PDF downloaded.', 'SUCCESS');
+        setMyTeam(prev => ({ ...prev, score: (prev?.score || 0) + 500, hasSubmittedAccusation: true }));
       } else {
         playError();
-        showToast(`Accusation result: ${score}/5 correct`, 'ERROR');
-        setMyTeam(prev => ({ ...prev, score: Math.max(0, (prev?.score || 0) - 50) }));
+        showToast(`Accusation result: ${score}/5 correct. Case Record PDF downloaded.`, 'ERROR');
+        setMyTeam(prev => ({ ...prev, score: Math.max(0, (prev?.score || 0) - 50), hasSubmittedAccusation: true }));
       }
     } else {
+      setMyTeam(prev => ({ ...prev, hasSubmittedAccusation: true }));
       const suspectTeamId = answersOrSuspectId;
       try {
         const res = await fetch('/api/game-action', {
@@ -1130,13 +1186,16 @@ export default function App() {
             Quick Guide
           </button>
 
-          <button
-            onClick={() => { playClick(); setShowLeaderboard(true); }}
-            className="bg-slate-900/90 border border-amber-600/80 hover:border-amber-400 text-amber-300 px-3 py-1.5 rounded-lg text-xs font-mono flex items-center gap-1.5 cursor-pointer shadow-lg"
-          >
-            <Trophy className="w-3.5 h-3.5 text-amber-400" />
-            Leaderboard
-          </button>
+          {isAdmin && (
+            <button
+              onClick={() => { playClick(); setShowLeaderboard(true); }}
+              className="bg-slate-900/90 border border-amber-600/80 hover:border-amber-400 text-amber-300 px-3 py-1.5 rounded-lg text-xs font-mono flex items-center gap-1.5 cursor-pointer shadow-lg"
+              title="View Live Standings (Admin Only)"
+            >
+              <Trophy className="w-3.5 h-3.5 text-amber-400" />
+              Leaderboard (Admin)
+            </button>
+          )}
 
           <button
             onClick={() => { playClick(); setShowAdminPanel(true); }}
@@ -1192,6 +1251,13 @@ export default function App() {
             onResetEntireGame={handleResetEntireGame}
             onExitToLobby={handleExitToLobby}
             elapsedSeconds={elapsedSeconds}
+            submissionAlerts={submissionAlerts}
+            onClearSubmissionAlerts={() => {
+              setSubmissionAlerts([]);
+              try {
+                localStorage.removeItem('cyber_mafia_submission_alerts');
+              } catch (e) {}
+            }}
             onAdminAction={() => {
               if (socket && socket.connected) {
                 socket.emit('admin_action', { action: 'REFRESH' });
@@ -1203,7 +1269,7 @@ export default function App() {
 
         {showGuideModal && <GameGuideModal onClose={() => setShowGuideModal(false)} />}
         
-        {showLeaderboard && (
+        {showLeaderboard && isAdmin && (
           <LeaderboardView
             isOpen={showLeaderboard}
             onClose={() => setShowLeaderboard(false)}
@@ -1301,15 +1367,17 @@ export default function App() {
             </button>
           )}
 
-          {/* Leaderboard Button */}
-          <button
-            onClick={() => { playClick(); setShowLeaderboard(true); }}
-            className="px-3 py-1.5 bg-amber-950/60 border border-amber-600/80 hover:border-amber-400 rounded-xl text-amber-300 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-            title="View Live Standings"
-          >
-            <Trophy className="w-3.5 h-3.5 text-amber-400" />
-            <span className="hidden sm:inline">Leaderboard</span>
-          </button>
+          {/* Leaderboard Button - Admin Only */}
+          {isAdmin && (
+            <button
+              onClick={() => { playClick(); setShowLeaderboard(true); }}
+              className="px-3 py-1.5 bg-amber-950/60 border border-amber-600/80 hover:border-amber-400 rounded-xl text-amber-300 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+              title="View Live Standings (Admin Only)"
+            >
+              <Trophy className="w-3.5 h-3.5 text-amber-400" />
+              <span className="hidden sm:inline">Leaderboard</span>
+            </button>
+          )}
 
           {/* Audio, Guide & Admin */}
           <div className="flex items-center gap-1.5">
@@ -1384,6 +1452,7 @@ export default function App() {
           isOpen={showAccusationModal}
           onClose={() => setShowAccusationModal(false)}
           onSubmitAccusation={handleSubmitAccusation}
+          hasAlreadySubmitted={Boolean(myTeam?.hasSubmittedAccusation)}
         />
       )}
 
@@ -1392,6 +1461,7 @@ export default function App() {
         <RevealModal
           revealResult={customVerdict}
           onClose={() => setCustomVerdict(null)}
+          myTeam={myTeam}
         />
       )}
 
@@ -1412,6 +1482,7 @@ export default function App() {
         <RevealModal
           revealResult={gameState.revealResult}
           timer={gameState.timer}
+          myTeam={myTeam}
         />
       )}
 
@@ -1445,6 +1516,13 @@ export default function App() {
           onResetEntireGame={handleResetEntireGame}
           onExitToLobby={handleExitToLobby}
           elapsedSeconds={elapsedSeconds}
+          submissionAlerts={submissionAlerts}
+          onClearSubmissionAlerts={() => {
+            setSubmissionAlerts([]);
+            try {
+              localStorage.removeItem('cyber_mafia_submission_alerts');
+            } catch (e) {}
+          }}
           onAdminAction={() => {
             if (socket && socket.connected) {
               socket.emit('admin_action', { action: 'REFRESH' });
@@ -1454,8 +1532,8 @@ export default function App() {
         />
       )}
 
-      {/* Leaderboard View */}
-      {showLeaderboard && (
+      {/* Leaderboard View - Admin Only */}
+      {showLeaderboard && isAdmin && (
         <LeaderboardView
           isOpen={showLeaderboard}
           onClose={() => setShowLeaderboard(false)}

@@ -14,6 +14,13 @@ const DEFAULT_SQUAD_NAMES = [
   'Firewall Elite', 'Black Ice', 'Shadow Nexus'
 ];
 
+const CASE_SUSPECTS = [
+  { id: 'S01', name: 'Dr. Mira Sen', role: 'CIVILIAN', suspicion: 'HIGH' },
+  { id: 'S02', name: 'Noah Mercer', role: 'CIVILIAN', suspicion: 'HIGH' },
+  { id: 'S03', name: 'Felix Grant', role: 'CIVILIAN', suspicion: 'CRITICAL' },
+  { id: 'S04', name: 'Elena Ward', role: 'HACKER', suspicion: 'MEDIUM' }
+];
+
 class GameService {
   constructor() {
     this.supabase = getServiceClient();
@@ -166,7 +173,7 @@ class GameService {
     const supabase = getServiceClient();
     const session = await this.getOrCreateSession(sessionId);
 
-    const { data: team } = await supabase
+    let { data: team } = await supabase
       .from('teams')
       .select('*')
       .eq('session_id', sessionId)
@@ -174,7 +181,32 @@ class GameService {
       .single();
 
     if (!team) {
-      throw new Error(`Team ${teamId} not found in session ${sessionId}`);
+      const suspect = CASE_SUSPECTS.find(s => s.id === teamId);
+      const newTeam = {
+        id: teamId,
+        session_id: sessionId,
+        name: suspect ? suspect.name : `Squad ${teamId}`,
+        role: suspect ? suspect.role : 'CIVILIAN',
+        secret_revealed: false,
+        integrity: 100,
+        score: 0,
+        is_bot: false,
+        is_eliminated: false,
+        modules: {
+          dashboard: 'ACTIVE',
+          investigation: 'ACTIVE',
+          evidenceVault: 'ACTIVE',
+          networkMonitor: 'ACTIVE'
+        },
+        players: [],
+        attack_history: [],
+        evidence_count: 0,
+        suspicion: suspect ? suspect.suspicion : 'LOW',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+      await supabase.from('teams').upsert(newTeam);
+      team = newTeam;
     }
 
     const players = Array.isArray(team.players) ? [...team.players] : [];
@@ -575,9 +607,18 @@ class GameService {
   async getLeaderboard(sessionId) {
     const supabase = getServiceClient();
 
+    // Fetch session started_at to compute real playing times
+    const { data: session } = await supabase
+      .from('game_sessions')
+      .select('id, started_at, status')
+      .eq('id', sessionId)
+      .single();
+
+    const sessionStart = session?.started_at ? new Date(session.started_at).getTime() : null;
+
     const { data: teams, error } = await supabase
       .from('teams')
-      .select('id, name, score, integrity, is_eliminated, updated_at')
+      .select('id, name, score, integrity, is_eliminated, updated_at, has_submitted_accusation, accusation_submitted_at, accusation_score, completed_stages, completed_levels')
       .eq('session_id', sessionId);
 
     if (error || !teams) {
@@ -603,20 +644,51 @@ class GameService {
       }
     });
 
+    const formatDuration = (secs) => {
+      if (secs === null || secs === undefined || isNaN(secs) || secs < 0) return '0s';
+      const m = Math.floor(secs / 60);
+      const s = Math.floor(secs % 60);
+      return m > 0 ? `${m}m ${s}s` : `${s}s`;
+    };
+
+    // Calculate time taken and round info for each team
+    const teamStats = teams.map(t => {
+      const comp = (t.completed_stages !== undefined && t.completed_stages !== null)
+        ? t.completed_stages
+        : (progressMap[t.id]?.completedLevels || 0);
+      const currentRound = Math.min(comp + 1, 5);
+      const checkpointTime = progressMap[t.id]?.latestCheckpoint || t.updated_at || '';
+      
+      let elapsedSeconds = 0;
+      if (sessionStart && checkpointTime) {
+        elapsedSeconds = Math.max(0, Math.round((new Date(checkpointTime).getTime() - sessionStart) / 1000));
+      }
+
+      return {
+        ...t,
+        completedLevels: comp,
+        currentRound,
+        latestCheckpoint: checkpointTime,
+        elapsedSeconds,
+        timeFormatted: formatDuration(elapsedSeconds),
+        hasSubmitted: Boolean(t.has_submitted_accusation),
+        submittedAt: t.accusation_submitted_at || null,
+        accusationScore: t.accusation_score ?? null
+      };
+    });
+
     // Deterministic sorting:
     // 1. Score DESC
-    // 2. Completed Levels DESC
-    // 3. Earliest Checkpoint / Update ASC (tie-breaker for who reached it first)
+    // 2. Completed Levels / Current Round DESC
+    // 3. Earliest Checkpoint / Elapsed Time ASC (faster teams rank higher)
     // 4. Team ID ASC (final deterministic tie-breaker)
-    const sorted = [...teams].sort((a, b) => {
+    const sorted = [...teamStats].sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
 
-      const aComp = progressMap[a.id]?.completedLevels || 0;
-      const bComp = progressMap[b.id]?.completedLevels || 0;
-      if (bComp !== aComp) return bComp - aComp;
+      if (b.completedLevels !== a.completedLevels) return b.completedLevels - a.completedLevels;
 
-      const aTime = progressMap[a.id]?.latestCheckpoint || a.updated_at || '';
-      const bTime = progressMap[b.id]?.latestCheckpoint || b.updated_at || '';
+      const aTime = a.latestCheckpoint || '';
+      const bTime = b.latestCheckpoint || '';
       if (aTime !== bTime) return aTime.localeCompare(bTime);
 
       return a.id.localeCompare(b.id);
@@ -628,9 +700,16 @@ class GameService {
       teamName: t.name,
       score: t.score,
       integrity: t.integrity,
-      isEliminated: t.isEliminated,
-      completionStatus: t.isEliminated ? 'ELIMINATED' : 'ACTIVE',
-      completedLevels: progressMap[t.id]?.completedLevels || 0
+      isEliminated: t.is_eliminated || t.isEliminated,
+      completionStatus: (t.is_eliminated || t.isEliminated) ? 'ELIMINATED' : (t.hasSubmitted ? 'SUBMITTED' : 'ACTIVE'),
+      completedLevels: t.completedLevels,
+      currentRound: t.currentRound,
+      elapsedSeconds: t.elapsedSeconds,
+      timeFormatted: t.timeFormatted,
+      latestCheckpoint: t.latestCheckpoint,
+      hasSubmitted: t.hasSubmitted,
+      submittedAt: t.submittedAt,
+      accusationScore: t.accusationScore
     }));
   }
 

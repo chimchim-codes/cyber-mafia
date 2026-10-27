@@ -56,14 +56,8 @@ export const PYTHON_CHALLENGES = [
 
 header = "Host: sec.local\\r\\nX-Bypass-Key: BYPASS-ELENA-WARD-99\\r\\nUser-Agent: Terminal/1.0"
 
-# TODO: Use string .split() to isolate and print the key value
-lines = header.split("\\r\\n")
-bypass_key = ""
-for line in lines:
-    if line.startswith("X-Bypass-Key:"):
-        bypass_key = line.split(": ")[1]
+# TODO: Extract and print the value of X-Bypass-Key using string manipulation (e.g. .split())
 
-print(bypass_key)
 `,
     expected: 'BYPASS-ELENA-WARD-99',
     acceptedAlternatives: ['BYPASS-ELENA-WARD', 'BYPASS-ELENA-WARD-99'],
@@ -91,14 +85,8 @@ login_records = [
     ("elena_ward", "SUCCESS")
 ]
 
-# TODO: Loop over login_records and find the failed username
-suspicious_user = ""
-for user, status in login_records:
-    if status == "FAILED":
-        suspicious_user = user
-        break
+# TODO: Iterate through login_records and print the username that has a "FAILED" status
 
-print(suspicious_user)
 `,
     expected: 'guest_temp',
     acceptedAlternatives: ['guest_temp', '"guest_temp"'],
@@ -121,14 +109,8 @@ print(suspicious_user)
 authorized_users = ["mira_sen", "noah_mercer", "felix_grant", "elena_ward", "adrian_vale"]
 logged_users = ["mira_sen", "felix_grant", "shadow_operator", "elena_ward"]
 
-# TODO: Use a membership check (user not in authorized_users)
-impostor = ""
-for user in logged_users:
-    if user not in authorized_users:
-        impostor = user
-        break
+# TODO: Find the username in logged_users that does NOT appear in authorized_users and print it
 
-print(impostor)
 `,
     expected: 'shadow_operator',
     acceptedAlternatives: ['shadow_operator', '"shadow_operator"'],
@@ -152,15 +134,12 @@ def check_access(user, code):
     authorized_users = ["elena_ward", "adrian_vale"]
     valid_code = "SEC-7702"
     
-    # Dual-condition verification
-    if user in authorized_users and code == valid_code:
-        return "ACCESS_GRANTED"
-    else:
-        return "ACCESS_DENIED"
+    # TODO: Verify BOTH conditions: user must be in authorized_users AND code must equal valid_code.
+    # Return "ACCESS_GRANTED" if authorized, otherwise return "ACCESS_DENIED".
+    pass
 
-# Evaluate for executive Elena Ward with code SEC-7702
-result = check_access("elena_ward", "SEC-7702")
-print(result)
+# TODO: Call check_access for user "elena_ward" with code "SEC-7702" and print the returned status
+
 `,
     expected: 'ACCESS_GRANTED',
     acceptedAlternatives: ['ACCESS_GRANTED', '"ACCESS_GRANTED"'],
@@ -192,11 +171,8 @@ auth_logs = [
     {"timestamp": "08:42:15", "user": "noah_mercer", "status": 401, "ip": "10.0.1.45", "msg": "Auth Failed - Session Terminated"}
 ]
 
-# TODO: Filter where status == 200, and find user with maximum timestamp
-successful_logins = [log for log in auth_logs if log["status"] == 200]
-latest_successful = max(successful_logins, key=lambda x: x["timestamp"])
+# TODO: Filter auth_logs for status == 200, identify the record with the latest timestamp, and print the username
 
-print(latest_successful["user"])
 `,
     expected: 'elena_ward',
     acceptedAlternatives: ['elena_ward', '"elena_ward"'],
