@@ -1,23 +1,36 @@
 // client/src/components/LandingLobby.jsx
 import React, { useState } from 'react';
-import { Shield, Users, Terminal, Play, Cpu } from 'lucide-react';
+import { Users, Terminal, Play } from 'lucide-react';
 import { playClick } from '../utils/soundEffects';
+
+const FALLBACK_SUSPECTS = [
+  { id: 'S01', name: 'Dr. Mira Sen', title: 'Senior Research Fellow' },
+  { id: 'S02', name: 'Noah Mercer', title: 'Systems Architect' },
+  { id: 'S03', name: 'Felix Grant', title: 'Security Lead' },
+  { id: 'S04', name: 'Elena Ward', title: 'Director of Operations (Person of Interest)' }
+];
 
 export default function LandingLobby({ gameState, onJoinTeam, onStartGame, isAdmin }) {
   const [playerName, setPlayerName] = useState('');
   const [selectedTeamId, setSelectedTeamId] = useState('S01');
 
+  const suspects = (gameState?.teams && gameState.teams.length > 0)
+    ? gameState.teams.slice(0, 4)
+    : FALLBACK_SUSPECTS;
+
   const handleStart = (teamId) => {
     playClick();
-    onJoinTeam(playerName || 'Investigator_' + Math.floor(Math.random() * 900 + 100), teamId || selectedTeamId);
+    const finalTeamId = teamId || selectedTeamId || 'S01';
+    const finalName = playerName.trim() || 'Detective_' + Math.floor(Math.random() * 900 + 100);
+    onJoinTeam(finalName, finalTeamId);
     setTimeout(() => {
       onStartGame();
-    }, 300);
+    }, 150);
   };
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-4 cyber-grid relative font-mono">
-      {/* Top Banner (Minimal) */}
+      {/* Top Banner */}
       <div className="max-w-2xl w-full text-center mb-6 z-10">
         <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-cyan-950/60 border border-cyan-800/60 text-cyan-400 text-xs mb-2 tracking-widest uppercase">
           <Terminal className="w-3.5 h-3.5" />
@@ -28,7 +41,7 @@ export default function LandingLobby({ gameState, onJoinTeam, onStartGame, isAdm
         </h1>
       </div>
 
-      {/* Main Minimal Card */}
+      {/* Main Card */}
       <div className="max-w-2xl w-full bg-slate-900/90 border border-slate-800 rounded-2xl p-6 backdrop-blur-md shadow-2xl z-10 space-y-5">
         <div>
           <label className="text-xs text-slate-400 block mb-1">Investigator Name / Call-sign:</label>
@@ -38,6 +51,9 @@ export default function LandingLobby({ gameState, onJoinTeam, onStartGame, isAdm
             onChange={(e) => setPlayerName(e.target.value)}
             placeholder="e.g. Detective_01"
             className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-cyan-500 font-mono"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleStart(selectedTeamId);
+            }}
           />
         </div>
 
@@ -47,7 +63,7 @@ export default function LandingLobby({ gameState, onJoinTeam, onStartGame, isAdm
             <Users className="w-3.5 h-3.5 text-cyan-400" /> Key Case Suspects:
           </span>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-            {gameState?.teams?.slice(0, 4).map(suspect => (
+            {suspects.map(suspect => (
               <div
                 key={suspect.id}
                 onClick={() => { playClick(); setSelectedTeamId(suspect.id); }}
