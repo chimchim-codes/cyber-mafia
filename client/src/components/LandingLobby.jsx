@@ -1,9 +1,9 @@
 // client/src/components/LandingLobby.jsx
 import React, { useState } from 'react';
-import { Shield, Skull, Users, Terminal, Play, Bot, Radio, Cpu, Award } from 'lucide-react';
+import { Shield, Skull, Users, Terminal, Play, Bot, Radio, Cpu, Award, Settings } from 'lucide-react';
 import { playClick } from '../utils/soundEffects';
 
-export default function LandingLobby({ gameState, onJoinTeam, onStartGame, isAdmin, onToggleAdmin }) {
+export default function LandingLobby({ gameState, onJoinTeam, onStartGame, isAdmin, onOpenAdmin, isStartingGame }) {
   const [playerName, setPlayerName] = useState('');
   const [selectedTeamId, setSelectedTeamId] = useState('C01');
 
@@ -81,10 +81,11 @@ export default function LandingLobby({ gameState, onJoinTeam, onStartGame, isAdm
             <div className="pt-2">
               <button
                 onClick={handleQuickDemo}
-                className="w-full py-2.5 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-semibold rounded-lg text-xs uppercase tracking-wider shadow-lg shadow-cyan-900/40 flex items-center justify-center gap-2 transition-all cursor-pointer"
+                disabled={isStartingGame}
+                className="w-full py-2.5 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 disabled:opacity-50 text-white font-semibold rounded-lg text-xs uppercase tracking-wider shadow-lg shadow-cyan-900/40 flex items-center justify-center gap-2 transition-all cursor-pointer"
               >
                 <Play className="w-4 h-4 fill-white" />
-                Quick Match (with Bots)
+                {isStartingGame ? 'Starting Match...' : 'Quick Match (with Bots)'}
               </button>
             </div>
           </div>
@@ -137,21 +138,29 @@ export default function LandingLobby({ gameState, onJoinTeam, onStartGame, isAdm
             <div className="flex items-center justify-between pt-4 border-t border-slate-800">
               <div className="flex items-center gap-2">
                 <button
-                  onClick={onToggleAdmin}
-                  className={`text-xs px-2.5 py-1 rounded border font-mono transition-colors ${
-                    isAdmin ? 'bg-amber-950/60 border-amber-600 text-amber-300' : 'bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-300'
+                  onClick={() => {
+                    playClick();
+                    if (onOpenAdmin) onOpenAdmin();
+                  }}
+                  className={`text-xs px-3 py-1.5 rounded-lg border font-mono transition-colors flex items-center gap-1.5 cursor-pointer ${
+                    isAdmin
+                      ? 'bg-amber-950/60 border-amber-600 text-amber-300 hover:bg-amber-900/60'
+                      : 'bg-slate-950 border-slate-700 text-slate-400 hover:text-white hover:border-slate-500'
                   }`}
+                  title="Open Administrative Console"
                 >
-                  Admin Mode: {isAdmin ? 'ON' : 'OFF'}
+                  <Settings className={`w-3.5 h-3.5 ${isAdmin ? 'text-amber-400' : 'text-slate-400'}`} />
+                  <span>{isAdmin ? 'Admin Console' : 'Admin Login'}</span>
                 </button>
               </div>
 
               <button
                 onClick={() => onStartGame()}
-                className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-xs uppercase tracking-wider shadow-lg shadow-emerald-950 flex items-center gap-2 transition-all cursor-pointer"
+                disabled={isStartingGame}
+                className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold rounded-lg text-xs uppercase tracking-wider shadow-lg shadow-emerald-950 flex items-center gap-2 transition-all cursor-pointer"
               >
                 <Play className="w-4 h-4 fill-white" />
-                Start Match
+                {isStartingGame ? 'Starting Match...' : 'Start Match'}
               </button>
             </div>
           </div>

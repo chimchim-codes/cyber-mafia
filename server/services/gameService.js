@@ -34,6 +34,10 @@ class GameService {
       .eq('id', sessionId)
       .single();
 
+    if (error && error.code !== 'PGRST116') {
+      console.warn(`[getOrCreateSession] DB lookup warning for session ${sessionId}:`, error.message);
+    }
+
     if (!session || error) {
       const now = new Date().toISOString();
       const newSession = {
@@ -69,7 +73,16 @@ class GameService {
         metadata: { teamCount, hackerCount }
       };
 
-      await supabase.from('game_sessions').insert(newSession);
+      const { error: insErr } = await supabase.from('game_sessions').insert(newSession);
+      if (insErr) {
+        if (insErr.code === '23505') {
+          // Concurrently created by another request; load it
+          const { data: reloadedSession } = await supabase.from('game_sessions').select('*').eq('id', sessionId).single();
+          if (reloadedSession) return reloadedSession;
+        } else {
+          throw new Error(`Database error creating game session: ${insErr.message}`);
+        }
+      }
       session = newSession;
 
       // Initialize default teams
@@ -110,7 +123,10 @@ class GameService {
       });
     }
 
-    await supabase.from('teams').upsert(teams);
+    const { error: teamsErr } = await supabase.from('teams').upsert(teams);
+    if (teamsErr) {
+      throw new Error(`Database error initializing teams: ${teamsErr.message}`);
+    }
 
     // Initialize team progress for Level 1 (Round 1)
     const progressList = teams.map(t => ({
@@ -126,7 +142,10 @@ class GameService {
       revision: 1
     }));
 
-    await supabase.from('team_progress').upsert(progressList);
+    const { error: progErr } = await supabase.from('team_progress').upsert(progressList);
+    if (progErr) {
+      throw new Error(`Database error initializing team progress: ${progErr.message}`);
+    }
     return teams;
   }
 
@@ -162,7 +181,7 @@ class GameService {
 
     players.push(newPlayer);
 
-    const { data: updatedTeam } = await supabase
+    const { data: updatedTeam, error: updErr } = await supabase
       .from('teams')
       .update({
         players,
@@ -172,6 +191,10 @@ class GameService {
       .eq('session_id', sessionId)
       .eq('id', teamId)
       .single();
+
+    if (updErr) {
+      throw new Error(`Database error joining team: ${updErr.message}`);
+    }
 
     return updatedTeam || { ...team, players, is_bot: false };
   }
@@ -192,18 +215,22 @@ class GameService {
     const now = new Date().toISOString();
 
     // Assign secret roles deterministically
-    const { data: teams } = await supabase
+    const { data: teams, error: teamsErr } = await supabase
       .from('teams')
       .select('*')
       .eq('session_id', sessionId);
 
-    const hackerCount = session.metadata?.hackerCount || 2;
-    const shuffled = [...teams].sort(() => Math.random() - 0.5);
+    if (teamsErr) {
+      throw new Error(`Database error fetching teams for role assignment: ${teamsErr.message}`);
+    }
 
-    for (let i = 0; i < teams.length; i++) {
+    const hackerCount = session.metadata?.hackerCount || 2;
+    const shuffled = [...(teams || [])].sort(() => Math.random() - 0.5);
+
+    for (let i = 0; i < (teams || []).length; i++) {
       const isHacker = i < hackerCount;
       const t = shuffled[i];
-      await supabase
+      const { error: roleErr } = await supabase
         .from('teams')
         .update({
           role: isHacker ? 'HACKER' : 'CIVILIAN',
@@ -213,6 +240,10 @@ class GameService {
         })
         .eq('session_id', sessionId)
         .eq('id', t.id);
+
+      if (roleErr) {
+        throw new Error(`Database error assigning role to team ${t.id}: ${roleErr.message}`);
+      }
     }
 
     // Update Session
@@ -228,10 +259,14 @@ class GameService {
       last_meaningful_update: now
     };
 
-    await supabase
+    const { error: sessErr } = await supabase
       .from('game_sessions')
       .update(updated)
       .eq('id', sessionId);
+
+    if (sessErr) {
+      throw new Error(`Database error updating session for start: ${sessErr.message}`);
+    }
 
     // System log
     await this.logSystem(sessionId, 'GAME_START', 'CORE', 'CYBER MAFIA initiated. Secret roles assigned.');
@@ -260,10 +295,14 @@ class GameService {
       last_meaningful_update: now
     };
 
-    await supabase
+    const { error: pauseErr } = await supabase
       .from('game_sessions')
       .update(updates)
       .eq('id', sessionId);
+
+    if (pauseErr) {
+      throw new Error(`Database error pausing game: ${pauseErr.message}`);
+    }
 
     // Audit log
     await this.recordAuditLog({
@@ -306,10 +345,14 @@ class GameService {
       last_meaningful_update: now.toISOString()
     };
 
-    await supabase
+    const { error: resumeErr } = await supabase
       .from('game_sessions')
       .update(updates)
       .eq('id', sessionId);
+
+    if (resumeErr) {
+      throw new Error(`Database error resuming game: ${resumeErr.message}`);
+    }
 
     // Audit log
     await this.recordAuditLog({
@@ -354,10 +397,14 @@ class GameService {
       last_meaningful_update: now.toISOString()
     };
 
-    await supabase
+    const { error: endErr } = await supabase
       .from('game_sessions')
       .update(updates)
       .eq('id', sessionId);
+
+    if (endErr) {
+      throw new Error(`Database error ending game: ${endErr.message}`);
+    }
 
     // Reveal all roles upon game over
     const { data: teams } = await supabase.from('teams').select('*').eq('session_id', sessionId);
@@ -457,6 +504,9 @@ class GameService {
 
     const { error: insertErr } = await supabase.from('score_events').insert(event);
     if (insertErr) {
+      if (insertErr.code === '23505' || insertErr.message?.includes('duplicate key') || insertErr.message?.includes('idempotency_key')) {
+        return { success: false, duplicate: true, message: 'Score event already processed (idempotent duplicate).' };
+      }
       throw new Error(`Failed to insert score event: ${insertErr.message}`);
     }
 
@@ -472,19 +522,43 @@ class GameService {
   async recalculateTeamScore(sessionId, teamId) {
     const supabase = getServiceClient();
 
-    const { data: events } = await supabase
+    // 1. Attempt atomic PostgreSQL stored function if available
+    try {
+      if (typeof supabase.rpc === 'function') {
+        const { data: rpcScore, error: rpcErr } = await supabase.rpc('recalculate_team_score', {
+          p_session_id: sessionId,
+          p_team_id: teamId
+        });
+        if (!rpcErr && typeof rpcScore === 'number') {
+          return rpcScore;
+        }
+      }
+    } catch (_) {
+      // Fall through to query summation if RPC is not present
+    }
+
+    // 2. Query authoritative score_events ledger and sync teams table
+    const { data: events, error: evErr } = await supabase
       .from('score_events')
       .select('score_delta')
       .eq('session_id', sessionId)
       .eq('team_id', teamId);
 
+    if (evErr) {
+      throw new Error(`Failed to fetch score events for recalculation: ${evErr.message}`);
+    }
+
     const total = (events || []).reduce((sum, ev) => sum + (ev.score_delta || 0), 0);
 
-    await supabase
+    const { error: updErr } = await supabase
       .from('teams')
       .update({ score: total, updated_at: new Date().toISOString() })
       .eq('session_id', sessionId)
       .eq('id', teamId);
+
+    if (updErr) {
+      throw new Error(`Failed to update recalculated team score: ${updErr.message}`);
+    }
 
     return total;
   }
@@ -583,7 +657,10 @@ class GameService {
       revision: nextRevision
     };
 
-    await supabase.from('team_progress').upsert(progressRecord);
+    const { error: upsertErr } = await supabase.from('team_progress').upsert(progressRecord);
+    if (upsertErr) {
+      throw new Error(`Database error saving progress checkpoint: ${upsertErr.message}`);
+    }
 
     // Create persistent recovery snapshot
     const { data: team } = await supabase
@@ -608,7 +685,10 @@ class GameService {
       reason
     };
 
-    await supabase.from('recovery_snapshots').insert(snapshot);
+    const { error: snapErr } = await supabase.from('recovery_snapshots').insert(snapshot);
+    if (snapErr) {
+      throw new Error(`Database error saving recovery snapshot: ${snapErr.message}`);
+    }
     return { progressRecord, snapshot };
   }
 
@@ -734,7 +814,10 @@ class GameService {
       last_checkpoint_at: new Date().toISOString()
     };
 
-    await supabase.from('team_progress').upsert(restoredProgress);
+    const { error: restErr } = await supabase.from('team_progress').upsert(restoredProgress);
+    if (restErr) {
+      throw new Error(`Database error restoring team progress: ${restErr.message}`);
+    }
 
     // Reconcile score: insert compensating score event if snapshot score differs
     const { data: team } = await supabase
@@ -749,7 +832,7 @@ class GameService {
     const adjustment = targetScore - currentScore;
 
     if (adjustment !== 0) {
-      await supabase.from('score_events').insert({
+      const { error: scoreAdjErr } = await supabase.from('score_events').insert({
         session_id: sessionId,
         team_id: teamId,
         level_id: levelId,
@@ -759,6 +842,9 @@ class GameService {
         metadata: { snapshotId, adminIdentity, reason },
         created_at: new Date().toISOString()
       });
+      if (scoreAdjErr) {
+        throw new Error(`Database error creating restore score adjustment: ${scoreAdjErr.message}`);
+      }
       await this.recalculateTeamScore(sessionId, teamId);
     }
 
@@ -809,7 +895,10 @@ class GameService {
       revision: (currentProgress?.revision || 1) + 1
     };
 
-    await supabase.from('team_progress').upsert(resetProgress);
+    const { error: resetErr } = await supabase.from('team_progress').upsert(resetProgress);
+    if (resetErr) {
+      throw new Error(`Database error resetting team level: ${resetErr.message}`);
+    }
 
     await this.recordAuditLog({
       sessionId,
@@ -842,7 +931,7 @@ class GameService {
     // Compensate score events with a zeroing entry
     const currentScore = await this.recalculateTeamScore(sessionId, teamId);
     if (currentScore !== 0) {
-      await supabase.from('score_events').insert({
+      const { error: compErr } = await supabase.from('score_events').insert({
         session_id: sessionId,
         team_id: teamId,
         level_id: 1,
@@ -852,11 +941,14 @@ class GameService {
         metadata: { adminIdentity, reason },
         created_at: new Date().toISOString()
       });
+      if (compErr) {
+        throw new Error(`Database error zeroing team score: ${compErr.message}`);
+      }
       await this.recalculateTeamScore(sessionId, teamId);
     }
 
     // Reset team integrity and score
-    await supabase
+    const { error: teamResetErr } = await supabase
       .from('teams')
       .update({
         integrity: 100,
@@ -866,6 +958,10 @@ class GameService {
       })
       .eq('session_id', sessionId)
       .eq('id', teamId);
+
+    if (teamResetErr) {
+      throw new Error(`Database error resetting team integrity/score: ${teamResetErr.message}`);
+    }
 
     await this.recordAuditLog({
       sessionId,
@@ -971,18 +1067,21 @@ class GameService {
 
   async logSystem(sessionId, type, source, message) {
     const supabase = getServiceClient();
-    await supabase.from('game_logs').insert({
+    const { error } = await supabase.from('game_logs').insert({
       session_id: sessionId,
       log_type: type,
       source,
       message,
       created_at: new Date().toISOString()
     });
+    if (error) {
+      console.warn(`[logSystem] Failed to insert game log: ${error.message}`);
+    }
   }
 
   async recordAuditLog({ sessionId, adminIdentity, actionType, targetTeamId = null, targetLevelId = null, previousState = null, resultingState = null, reason }) {
     const supabase = getServiceClient();
-    await supabase.from('admin_audit_logs').insert({
+    const { error } = await supabase.from('admin_audit_logs').insert({
       session_id: sessionId,
       admin_identity: adminIdentity || 'SYSTEM_ADMIN',
       action_type: actionType,
@@ -993,6 +1092,9 @@ class GameService {
       reason: reason || 'Administrative action',
       created_at: new Date().toISOString()
     });
+    if (error) {
+      console.warn(`[recordAuditLog] Failed to insert admin audit log: ${error.message}`);
+    }
   }
 
   // Safe sanitized state generator for client

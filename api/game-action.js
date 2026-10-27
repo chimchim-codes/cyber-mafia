@@ -4,13 +4,14 @@
 const gameService = require('../server/services/gameService');
 const { getServiceClient } = require('../server/db/supabaseClient');
 const { generateHackerChallenge, generateCivilianLabChallenges } = require('../server/game/challenges');
+const { verifyAdminAuthorization } = require('../server/utils/auth');
 
 const labChallenges = generateCivilianLabChallenges();
 
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-admin-key');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-admin-key, Authorization');
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
@@ -20,44 +21,114 @@ module.exports = async function handler(req, res) {
     return res.status(405).json({ success: false, message: 'Method Not Allowed' });
   }
 
-  const adminKey = req.headers['x-admin-key'];
-  const configuredAdminKey = process.env.ADMIN_SECRET_KEY || 'cyber-mafia-admin-secret-replace-in-production';
-  const isAdmin = adminKey === configuredAdminKey;
-
   const { action, sessionId = 'default-cyber-session', teamId, payload = {} } = req.body || {};
   const supabase = getServiceClient();
 
   try {
     const session = await gameService.getOrCreateSession(sessionId);
 
-    // Lifecycle Actions
+    // Lifecycle Actions (All administrative lifecycle actions require verified admin authorization)
     if (action === 'START_GAME') {
+      const auth = verifyAdminAuthorization(req);
+      if (!auth.authorized) {
+        return res.status(auth.statusCode || 401).json({
+          success: false,
+          code: auth.code,
+          message: auth.message || 'Admin authorization required to start match.'
+        });
+      }
       const result = await gameService.startGame(sessionId);
       return res.status(200).json(result);
     }
 
     if (action === 'PAUSE_GAME') {
-      if (!isAdmin) {
-        return res.status(403).json({ success: false, message: 'Admin authorization required to pause match.' });
+      const auth = verifyAdminAuthorization(req);
+      if (!auth.authorized) {
+        return res.status(auth.statusCode || 401).json({
+          success: false,
+          code: auth.code,
+          message: auth.message || 'Admin authorization required to pause match.'
+        });
       }
       const result = await gameService.pauseGame(sessionId, 'ADMIN');
       return res.status(200).json(result);
     }
 
     if (action === 'RESUME_GAME') {
-      if (!isAdmin) {
-        return res.status(403).json({ success: false, message: 'Admin authorization required to resume match.' });
+      const auth = verifyAdminAuthorization(req);
+      if (!auth.authorized) {
+        return res.status(auth.statusCode || 401).json({
+          success: false,
+          code: auth.code,
+          message: auth.message || 'Admin authorization required to resume match.'
+        });
       }
       const result = await gameService.resumeGame(sessionId, 'ADMIN');
       return res.status(200).json(result);
     }
 
     if (action === 'END_GAME') {
-      if (!isAdmin) {
-        return res.status(403).json({ success: false, message: 'Admin authorization required to end match.' });
+      const auth = verifyAdminAuthorization(req);
+      if (!auth.authorized) {
+        return res.status(auth.statusCode || 401).json({
+          success: false,
+          code: auth.code,
+          message: auth.message || 'Admin authorization required to end match.'
+        });
       }
       const result = await gameService.endGame(sessionId, 'ADMIN', payload.reason || 'Admin ended match.');
       return res.status(200).json(result);
+    }
+
+    // Admin Phase & Test Overrides
+    if (action === 'FORCE_PHASE') {
+      const auth = verifyAdminAuthorization(req);
+      if (!auth.authorized) {
+        return res.status(auth.statusCode || 401).json({ success: false, code: auth.code, message: auth.message });
+      }
+      const targetPhase = payload.phase;
+      if (targetPhase) {
+        await supabase.from('game_sessions').update({
+          current_phase: targetPhase,
+          phase_timer_seconds: session.phase_duration_seconds || 60,
+          phase_started_at: new Date().toISOString()
+        }).eq('id', sessionId);
+        await gameService.logSystem(sessionId, 'ADMIN_OVERRIDE', 'ADMIN', `Phase manually forced to ${targetPhase}`);
+        return res.status(200).json({ success: true, message: `Phase forced to ${targetPhase}` });
+      }
+    }
+
+    if (action === 'REVEAL_ALL') {
+      const auth = verifyAdminAuthorization(req);
+      if (!auth.authorized) {
+        return res.status(auth.statusCode || 401).json({ success: false, code: auth.code, message: auth.message });
+      }
+      const { data: teams } = await supabase.from('teams').select('*').eq('session_id', sessionId);
+      for (const t of (teams || [])) {
+        await supabase.from('teams').update({ secret_revealed: true }).eq('session_id', sessionId).eq('id', t.id);
+      }
+      await gameService.logSystem(sessionId, 'ADMIN_OVERRIDE', 'ADMIN', 'All squad identities revealed by administrator.');
+      return res.status(200).json({ success: true, message: 'All squad roles revealed.' });
+    }
+
+    if (action === 'INJECT_ATTACK') {
+      const auth = verifyAdminAuthorization(req);
+      if (!auth.authorized) {
+        return res.status(auth.statusCode || 401).json({ success: false, code: auth.code, message: auth.message });
+      }
+      const { targetTeamId } = payload;
+      if (targetTeamId) {
+        const { data: target } = await supabase.from('teams').select('*').eq('session_id', sessionId).eq('id', targetTeamId).single();
+        if (target) {
+          const newIntegrity = Math.max(0, target.integrity - 20);
+          await supabase.from('teams').update({
+            integrity: newIntegrity,
+            modules: { ...target.modules, evidenceVault: 'DISABLED' }
+          }).eq('session_id', sessionId).eq('id', targetTeamId);
+          await gameService.logSystem(sessionId, 'ADMIN_INJECT', 'OVERRIDE', `Simulated breach injected into ${targetTeamId}`);
+          return res.status(200).json({ success: true, message: `Breach event injected into ${targetTeamId}` });
+        }
+      }
     }
 
     // Verify session is active for regular gameplay actions

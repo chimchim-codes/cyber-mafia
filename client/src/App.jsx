@@ -46,9 +46,14 @@ export default function App() {
   const [sessionId, setSessionId] = useState(DEFAULT_SESSION_ID);
   const [gameState, setGameState] = useState(null);
   const [myTeam, setMyTeam] = useState(null);
-  const [isAdmin, setIsAdmin] = useState(
-    localStorage.getItem('cyber_mafia_is_admin') === 'true'
+  const [adminKey, setAdminKey] = useState(
+    () => localStorage.getItem('cyber_mafia_admin_key') || ''
   );
+  const [isAdmin, setIsAdmin] = useState(
+    () => localStorage.getItem('cyber_mafia_is_admin') === 'true' && Boolean(localStorage.getItem('cyber_mafia_admin_key'))
+  );
+  const [isStartingGame, setIsStartingGame] = useState(false);
+  const [authError, setAuthError] = useState(null);
   const [soundOn, setSoundOn] = useState(true);
 
   // Modals
@@ -69,19 +74,42 @@ export default function App() {
 
   // Status banners / toasts
   const [notification, setNotification] = useState(null);
-  const [realtimeStatus, setRealtimeStatus] = useState('CONNECTED');
+  const [realtimeStatus, setRealtimeStatus] = useState(supabase ? 'CONNECTING' : 'OFFLINE');
 
   const showToast = (message, type = 'INFO') => {
     setNotification({ message, type });
     setTimeout(() => setNotification(null), 5000);
   };
 
+  const handleAdminLogin = async (key) => {
+    localStorage.setItem('cyber_mafia_admin_key', key);
+    localStorage.setItem('cyber_mafia_is_admin', 'true');
+    setAdminKey(key);
+    setIsAdmin(true);
+    setAuthError(null);
+    showToast('Admin authenticated successfully', 'SUCCESS');
+    refreshGameState();
+  };
+
+  const handleAdminLogout = () => {
+    localStorage.removeItem('cyber_mafia_admin_key');
+    localStorage.setItem('cyber_mafia_is_admin', 'false');
+    setAdminKey('');
+    setIsAdmin(false);
+    showToast('Admin logged out', 'INFO');
+  };
+
   // Authoritative State Fetcher
   const refreshGameState = async (teamId = null) => {
     const activeTeamId = teamId || myTeam?.id || localStorage.getItem('cyber_mafia_team_id');
+    const keyToUse = adminKey.trim() || localStorage.getItem('cyber_mafia_admin_key') || '';
     try {
+      const headers = {};
+      if (keyToUse) {
+        headers['x-admin-key'] = keyToUse;
+      }
       const res = await fetch(`/api/session?sessionId=${encodeURIComponent(sessionId)}${activeTeamId ? `&teamId=${activeTeamId}` : ''}`, {
-        headers: isAdmin ? { 'x-admin-key': localStorage.getItem('cyber_mafia_admin_key') || '' } : {}
+        headers
       });
       if (res.ok) {
         const state = await res.json();
@@ -127,9 +155,12 @@ export default function App() {
 
   // Supabase Realtime Channel Subscription (Phase 1.3)
   useEffect(() => {
-    if (!supabase) return;
+    if (!supabase) {
+      setRealtimeStatus('OFFLINE');
+      return;
+    }
 
-    setRealtimeStatus('CONNECTED');
+    setRealtimeStatus('CONNECTING');
     const channel = supabase
       .channel(`cyber_mafia_${sessionId}`)
       .on(
@@ -148,8 +179,15 @@ export default function App() {
         () => refreshGameState()
       )
       .subscribe((status) => {
-        if (status === 'SUBSCRIBED') setRealtimeStatus('CONNECTED');
-        if (status === 'CLOSED' || status === 'CHANNEL_ERROR') setRealtimeStatus('RECONNECTING');
+        if (status === 'SUBSCRIBED') {
+          setRealtimeStatus('CONNECTED');
+          // Reconnection triggers authoritative state reconciliation
+          refreshGameState();
+        } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
+          setRealtimeStatus('RECONNECTING');
+        } else if (status === 'TIMED_OUT') {
+          setRealtimeStatus('DISCONNECTED');
+        }
       });
 
     return () => {
@@ -222,19 +260,45 @@ export default function App() {
   };
 
   const handleStartGame = async () => {
+    const keyToUse = adminKey.trim() || localStorage.getItem('cyber_mafia_admin_key') || '';
+    if (!keyToUse) {
+      setAuthError('Admin authentication required to start match. Enter ADMIN_SECRET_KEY below.');
+      setShowAdminPanel(true);
+      showToast('Admin authentication required to start match.', 'ERROR');
+      return;
+    }
+
+    if (isStartingGame) return;
+    setIsStartingGame(true);
+
     try {
       const res = await fetch('/api/game-action', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-key': keyToUse
+        },
         body: JSON.stringify({ action: 'START_GAME', sessionId })
       });
-      const data = await res.json();
-      if (data.success) {
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        playSuccess();
         showToast('CYBER MAFIA match initiated!', 'SUCCESS');
-        refreshGameState();
+        await refreshGameState();
+      } else {
+        playError();
+        const errMsg = data.message || (res.status === 401 || res.status === 403 ? 'Unauthorized: Invalid admin key.' : 'Failed to start game.');
+        showToast(errMsg, 'ERROR');
+        if (res.status === 401 || res.status === 403 || data.code === 'NOT_CONFIGURED') {
+          setAuthError(errMsg);
+          setShowAdminPanel(true);
+        }
       }
     } catch (e) {
-      if (socket) socket.emit('start_game');
+      playError();
+      showToast('Network error while starting match: ' + e.message, 'ERROR');
+    } finally {
+      setIsStartingGame(false);
     }
   };
 
@@ -397,11 +461,11 @@ export default function App() {
           onJoinTeam={handleJoinTeam}
           onStartGame={handleStartGame}
           isAdmin={isAdmin}
-          onToggleAdmin={() => {
-            const next = !isAdmin;
-            setIsAdmin(next);
-            localStorage.setItem('cyber_mafia_is_admin', next ? 'true' : 'false');
+          onOpenAdmin={() => {
+            playClick();
+            setShowAdminPanel(true);
           }}
+          isStartingGame={isStartingGame}
         />
 
         {/* Floating Quick Action Buttons */}
@@ -421,7 +485,46 @@ export default function App() {
             <Trophy className="w-3.5 h-3.5 text-amber-400" />
             Leaderboard
           </button>
+
+          <button
+            onClick={() => { playClick(); setShowAdminPanel(true); }}
+            className={`border px-3 py-1.5 rounded-lg text-xs font-mono flex items-center gap-1.5 cursor-pointer shadow-lg transition-colors ${
+              isAdmin
+                ? 'bg-amber-950/90 border-amber-500 text-amber-300 hover:bg-amber-900/90'
+                : 'bg-slate-900/90 border-slate-700 hover:border-amber-500 text-slate-300 hover:text-white'
+            }`}
+          >
+            <Settings className="w-3.5 h-3.5 text-amber-400" />
+            {isAdmin ? 'Admin Console' : 'Admin Login'}
+          </button>
         </div>
+
+        {/* Toast Notification Banner in Lobby */}
+        {notification && (
+          <div className={`fixed top-4 right-4 z-50 px-4 py-2.5 rounded-xl border text-xs font-mono shadow-2xl flex items-center gap-2 animate-in slide-in-from-top duration-300 ${
+            notification.type === 'SUCCESS' ? 'bg-emerald-950/90 border-emerald-500 text-emerald-200' :
+            notification.type === 'ERROR' ? 'bg-rose-950/90 border-rose-500 text-rose-200' :
+            'bg-slate-900/90 border-cyan-500 text-cyan-200'
+          }`}>
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            <span>{notification.message}</span>
+          </div>
+        )}
+
+        {showAdminPanel && (
+          <AdminPanel
+            isOpen={showAdminPanel}
+            onClose={() => setShowAdminPanel(false)}
+            gameState={gameState}
+            sessionId={sessionId}
+            adminKey={adminKey}
+            isAdmin={isAdmin}
+            onAdminLogin={handleAdminLogin}
+            onAdminLogout={handleAdminLogout}
+            authError={authError}
+            onAdminAction={() => refreshGameState()}
+          />
+        )}
 
         {showGuideModal && <GameGuideModal onClose={() => setShowGuideModal(false)} />}
         
@@ -533,15 +636,18 @@ export default function App() {
               <HelpCircle className="w-4 h-4 text-amber-400" />
             </button>
 
-            {isAdmin && (
-              <button
-                onClick={() => { playClick(); setShowAdminPanel(true); }}
-                className="p-2 bg-amber-950/60 border border-amber-600 rounded-lg text-amber-300 font-bold text-xs flex items-center gap-1 cursor-pointer"
-              >
-                <Settings className="w-4 h-4 animate-spin" />
-                <span className="hidden md:inline">Admin</span>
-              </button>
-            )}
+            <button
+              onClick={() => { playClick(); setShowAdminPanel(true); }}
+              className={`p-2 rounded-lg font-bold text-xs flex items-center gap-1.5 cursor-pointer border ${
+                isAdmin
+                  ? 'bg-amber-950/60 border-amber-600 text-amber-300'
+                  : 'bg-slate-950 border-slate-800 hover:border-slate-700 text-slate-400 hover:text-white'
+              }`}
+              title="Administrative Master Console"
+            >
+              <Settings className={`w-4 h-4 ${isAdmin ? 'text-amber-400' : 'text-slate-400'}`} />
+              <span className="hidden md:inline">{isAdmin ? 'Admin' : 'Admin Login'}</span>
+            </button>
           </div>
         </div>
       </header>
@@ -621,6 +727,11 @@ export default function App() {
           onClose={() => setShowAdminPanel(false)}
           gameState={gameState}
           sessionId={sessionId}
+          adminKey={adminKey}
+          isAdmin={isAdmin}
+          onAdminLogin={handleAdminLogin}
+          onAdminLogout={handleAdminLogout}
+          authError={authError}
           onAdminAction={() => refreshGameState()}
         />
       )}

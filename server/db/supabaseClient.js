@@ -295,43 +295,122 @@ class MockSupabaseClient {
   get channels() {
     return [];
   }
+
+  async rpc(fnName, args = {}) {
+    if (fnName === 'recalculate_team_score') {
+      const { p_session_id, p_team_id } = args;
+      const events = Array.from(this.store.getTable('score_events').values())
+        .filter(e => e.session_id === p_session_id && e.team_id === p_team_id);
+      const total = events.reduce((sum, e) => sum + (e.score_delta || 0), 0);
+      const teamKey = `${p_session_id}_${p_team_id}`;
+      const team = this.store.getTable('teams').get(teamKey);
+      if (team) {
+        team.score = total;
+        team.updated_at = new Date().toISOString();
+      }
+      return { data: total, error: null };
+    }
+    return { data: null, error: null };
+  }
 }
 
 // Client Factory
 let serviceClientInstance = null;
 let anonClientInstance = null;
 
-function getServiceClient() {
-  if (serviceClientInstance) return serviceClientInstance;
+function isUsingMockDatabase() {
+  const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const forceMock = process.env.CYBER_MAFIA_USE_MOCK_DB === 'true';
+
+  if (forceMock) return true;
+  if (!url || !key) return true;
+  return false;
+}
+
+function getDatabaseConfigStatus() {
+  const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const anonKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+  const adminSecret = process.env.ADMIN_SECRET_KEY;
+  const isMock = isUsingMockDatabase();
+
+  return {
+    isMock,
+    provider: isMock ? 'in-memory-mock' : 'Supabase PostgreSQL',
+    hasSupabaseUrl: !!url,
+    hasServiceRoleKey: !!serviceKey,
+    hasAnonKey: !!anonKey,
+    hasAdminSecretKey: !!adminSecret,
+    mockExplicitlyForced: process.env.CYBER_MAFIA_USE_MOCK_DB === 'true'
+  };
+}
+
+function getServiceClient(options = {}) {
+  const { forceNew = false, forceMock = false } = options;
+  if (!forceNew && serviceClientInstance) return serviceClientInstance;
 
   const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const isProduction = process.env.NODE_ENV === 'production' || process.env.VERCEL === '1';
+  const explicitlyMock = forceMock || process.env.CYBER_MAFIA_USE_MOCK_DB === 'true';
+  const explicitlyLive = process.env.CYBER_MAFIA_USE_MOCK_DB === 'false';
 
-  if (url && key && !process.env.CYBER_MAFIA_USE_MOCK_DB) {
+  if (url && key && !explicitlyMock) {
     serviceClientInstance = createClient(url, key, {
       auth: { persistSession: false }
     });
     return serviceClientInstance;
   }
 
-  // Use test / memory store adapter
+  // If in production or explicitly requested live, NEVER fall back to mock
+  if (isProduction || explicitlyLive) {
+    const missing = [];
+    if (!url) missing.push('SUPABASE_URL');
+    if (!key) missing.push('SUPABASE_SERVICE_ROLE_KEY');
+    throw new Error(
+      `Supabase connection error: Missing required environment variable(s): ${missing.join(', ')}. ` +
+      `Production and live deployments require an active Supabase project.`
+    );
+  }
+
+  // In development/test mode without credentials, use mock with clear console notification
   serviceClientInstance = new MockSupabaseClient(memoryStore);
   return serviceClientInstance;
 }
 
-function getAnonClient() {
-  if (anonClientInstance) return anonClientInstance;
+function getAnonClient(options = {}) {
+  const { forceNew = false, forceMock = false } = options;
+  if (!forceNew && anonClientInstance) return anonClientInstance;
 
   const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
   const key = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+  const isProduction = process.env.NODE_ENV === 'production' || process.env.VERCEL === '1';
+  const explicitlyMock = forceMock || process.env.CYBER_MAFIA_USE_MOCK_DB === 'true';
+  const explicitlyLive = process.env.CYBER_MAFIA_USE_MOCK_DB === 'false';
 
-  if (url && key && !process.env.CYBER_MAFIA_USE_MOCK_DB) {
+  if (url && key && !explicitlyMock) {
     anonClientInstance = createClient(url, key);
     return anonClientInstance;
   }
 
+  if (isProduction || explicitlyLive) {
+    const missing = [];
+    if (!url) missing.push('SUPABASE_URL / VITE_SUPABASE_URL');
+    if (!key) missing.push('SUPABASE_ANON_KEY / VITE_SUPABASE_ANON_KEY');
+    throw new Error(
+      `Supabase public client error: Missing required environment variable(s): ${missing.join(', ')}. ` +
+      `Production and live deployments require an active Supabase project.`
+    );
+  }
+
   anonClientInstance = new MockSupabaseClient(memoryStore);
   return anonClientInstance;
+}
+
+function resetClientInstances() {
+  serviceClientInstance = null;
+  anonClientInstance = null;
 }
 
 function resetMemoryStore() {
@@ -342,5 +421,8 @@ module.exports = {
   getServiceClient,
   getAnonClient,
   resetMemoryStore,
+  resetClientInstances,
+  isUsingMockDatabase,
+  getDatabaseConfigStatus,
   memoryStore
 };

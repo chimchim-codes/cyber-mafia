@@ -2,23 +2,22 @@
 // Vercel Serverless Endpoint for Administrative Recovery Snapshots & Resets (Phase 6)
 
 const gameService = require('../../server/services/gameService');
+const { verifyAdminAuthorization } = require('../../server/utils/auth');
 
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-admin-key');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-admin-key, Authorization');
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
 
-  const adminKey = req.headers['x-admin-key'];
-  const configuredAdminKey = process.env.ADMIN_SECRET_KEY || 'cyber-mafia-admin-secret-replace-in-production';
-
-  if (adminKey !== configuredAdminKey) {
-    return res.status(401).json({
+  const auth = verifyAdminAuthorization(req);
+  if (!auth.authorized) {
+    return res.status(auth.statusCode || 401).json({
       success: false,
-      message: 'Unauthorized: Valid x-admin-key header required for administrative recovery operations.'
+      message: auth.message || 'Unauthorized: Valid administrative key required for administrative recovery operations.'
     });
   }
 

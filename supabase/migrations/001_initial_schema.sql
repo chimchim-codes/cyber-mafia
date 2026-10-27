@@ -5,6 +5,7 @@
 
 -- Enable required extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- 1. GAME SESSIONS
 CREATE TABLE IF NOT EXISTS game_sessions (
@@ -231,7 +232,15 @@ FOR EACH ROW
 EXECUTE FUNCTION trg_sync_team_score();
 
 -- =========================================================================
--- ROW LEVEL SECURITY (RLS) POLICIES
+-- REPLICA IDENTITY (Ensures Realtime broadcasts include full record data)
+-- =========================================================================
+
+ALTER TABLE game_sessions REPLICA IDENTITY FULL;
+ALTER TABLE teams REPLICA IDENTITY FULL;
+ALTER TABLE score_events REPLICA IDENTITY FULL;
+
+-- =========================================================================
+-- ROW LEVEL SECURITY (RLS) POLICIES & PRIVILEGE HARDENING
 -- =========================================================================
 
 ALTER TABLE game_sessions ENABLE ROW LEVEL SECURITY;
@@ -244,27 +253,75 @@ ALTER TABLE game_evidence ENABLE ROW LEVEL SECURITY;
 ALTER TABLE game_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE game_chat ENABLE ROW LEVEL SECURITY;
 
--- Allow anonymous public reads on active game sessions and public ledgers
-CREATE POLICY "Public read game_sessions" ON game_sessions FOR SELECT USING (true);
-CREATE POLICY "Public read teams" ON teams FOR SELECT USING (true);
-CREATE POLICY "Public read team_progress" ON team_progress FOR SELECT USING (true);
-CREATE POLICY "Public read score_events" ON score_events FOR SELECT USING (true);
-CREATE POLICY "Public read game_logs" ON game_logs FOR SELECT USING (true);
-CREATE POLICY "Public read game_chat" ON game_chat FOR SELECT USING (true);
+-- 1. Game Sessions (Public Read for active gameplay state)
+DROP POLICY IF EXISTS "Public read game_sessions" ON game_sessions;
+CREATE POLICY "Public read game_sessions" ON game_sessions FOR SELECT TO anon, authenticated USING (true);
 
--- Evidence is visible only if not erased (detailed role sanitization handled in API layer)
-CREATE POLICY "Public read non_erased evidence" ON game_evidence FOR SELECT USING (is_erased = false);
+-- 2. Teams (Public Read for team names, scores, and integrity)
+-- Note: Sensitive secret roles are shielded at the column level below
+DROP POLICY IF EXISTS "Public read teams" ON teams;
+CREATE POLICY "Public read teams" ON teams FOR SELECT TO anon, authenticated USING (true);
 
--- Recovery snapshots and audit logs are restricted (only readable by service_role or admin)
-CREATE POLICY "Service role full access recovery_snapshots" ON recovery_snapshots USING (true) WITH CHECK (true);
-CREATE POLICY "Service role full access admin_audit_logs" ON admin_audit_logs USING (true) WITH CHECK (true);
+-- 3. Team Progress & Score Events (Authoritative public ledgers)
+DROP POLICY IF EXISTS "Public read team_progress" ON team_progress;
+CREATE POLICY "Public read team_progress" ON team_progress FOR SELECT TO anon, authenticated USING (true);
 
--- Enable Supabase Realtime Publication for live updates
+DROP POLICY IF EXISTS "Public read score_events" ON score_events;
+CREATE POLICY "Public read score_events" ON score_events FOR SELECT TO anon, authenticated USING (true);
+
+-- 4. Game Logs & Chat (Public Read)
+DROP POLICY IF EXISTS "Public read game_logs" ON game_logs;
+CREATE POLICY "Public read game_logs" ON game_logs FOR SELECT TO anon, authenticated USING (true);
+
+DROP POLICY IF EXISTS "Public read game_chat" ON game_chat;
+CREATE POLICY "Public read game_chat" ON game_chat FOR SELECT TO anon, authenticated USING (true);
+
+-- 5. Game Evidence: RESTRICTED
+-- Game evidence contains raw attacker identities and unmasked origin nodes.
+-- Direct client access is denied; evidence is scrubbed and served authoritatively via /api/session.
+DROP POLICY IF EXISTS "Public read non_erased evidence" ON game_evidence;
+DROP POLICY IF EXISTS "Public read evidence" ON game_evidence;
+REVOKE ALL ON game_evidence FROM anon, authenticated;
+
+-- 6. Administrative Snapshots & Audit Logs: RESTRICTED
+-- Must NOT be readable or writable by anon or authenticated users.
+-- Only the service_role (which bypasses RLS) can access these tables.
+DROP POLICY IF EXISTS "Service role full access recovery_snapshots" ON recovery_snapshots;
+DROP POLICY IF EXISTS "Service role full access admin_audit_logs" ON admin_audit_logs;
+REVOKE ALL ON recovery_snapshots FROM anon, authenticated;
+REVOKE ALL ON admin_audit_logs FROM anon, authenticated;
+
+-- 7. Shield sensitive role data on teams table from unauthorized public SELECTs:
+-- Revoke wildcard SELECT on teams from anon and authenticated, and grant only non-sensitive columns.
+-- Secret roles are delivered exclusively through /api/session with authoritative player role masking.
+REVOKE SELECT ON teams FROM anon, authenticated;
+GRANT SELECT (
+  id, session_id, name, integrity, score, is_bot, is_eliminated,
+  modules, players, attack_history, evidence_count, suspicion,
+  created_at, updated_at
+) ON teams TO anon, authenticated;
+
+-- =========================================================================
+-- REALTIME PUBLICATION CONFIGURATION (Idempotent)
+-- =========================================================================
+
 DO $$
+DECLARE
+  tbl text;
+  tables text[] := ARRAY['game_sessions', 'teams', 'score_events', 'game_logs', 'game_chat', 'team_progress'];
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
     CREATE PUBLICATION supabase_realtime;
   END IF;
-END $$;
 
-ALTER PUBLICATION supabase_realtime ADD TABLE game_sessions, teams, score_events, game_logs, game_chat, team_progress;
+  FOREACH tbl IN ARRAY tables LOOP
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_publication_rel pr
+      JOIN pg_publication p ON p.oid = pr.prpubid
+      JOIN pg_class c ON c.oid = pr.prrelid
+      WHERE p.pubname = 'supabase_realtime' AND c.relname = tbl
+    ) THEN
+      EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE %I', tbl);
+    END IF;
+  END LOOP;
+END $$;

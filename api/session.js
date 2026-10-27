@@ -2,19 +2,20 @@
 // Vercel Serverless Endpoint for Game Session State & Joining Teams
 
 const gameService = require('../server/services/gameService');
+const { verifyAdminAuthorization } = require('../server/utils/auth');
 
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-admin-key');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-admin-key, Authorization');
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
 
-  const adminKey = req.headers['x-admin-key'];
-  const configuredAdminKey = process.env.ADMIN_SECRET_KEY || 'cyber-mafia-admin-secret-replace-in-production';
-  const isAdmin = adminKey === configuredAdminKey;
+  // Authorize admin status strictly without hardcoded fallback credentials
+  const authResult = verifyAdminAuthorization(req);
+  const isAdmin = authResult.authorized;
 
   try {
     if (req.method === 'GET') {
