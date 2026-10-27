@@ -58,10 +58,10 @@ const MCQ_QUESTIONS = [
     question: 'Which pieces of evidence support the accusation? (Select all that apply.)',
     type: 'multi',
     options: [
-      { key: 'A', label: 'MED-11 — Medical report confirming poisoning' },
-      { key: 'B', label: 'DATA-09 — Records of unauthorized model exports' },
-      { key: 'C', label: 'GM-20 — Sealed correspondence connecting Elena to the export scheme and knowledge of Adrian’s audit' },
-      { key: 'D', label: 'GM-21 — Authenticated corroborating evidence connecting Elena to the poisoning' }
+      { key: 'A', label: 'TOX-102 — Forensic Toxicology report confirming organophosphate poisoning' },
+      { key: 'B', label: 'MEM-501 — Recovered deleted emails exposing Elena\'s $12M model export and intent to silence Adrian before 09:00' },
+      { key: 'C', label: 'WIT-503 & SEC-502 — Witness statement and door audit confirming Elena delivered coffee to Adrian at 08:28-08:31' },
+      { key: 'D', label: 'BIO-602 & LOG-601 — Biometric DNA / fingerprint match on the poison mug handle and latest gateway login' }
     ]
   }
 ];

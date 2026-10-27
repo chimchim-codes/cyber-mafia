@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { 
   Shield, Search, Terminal, Network, 
-  Pin, ShieldAlert, Cpu, CheckCircle2, Activity
+  Pin, ShieldAlert, Cpu, CheckCircle2, Activity, Code2
 } from 'lucide-react';
 import CivilianInspect from './CivilianInspect';
 import CivilianLogs from './CivilianLogs';
@@ -14,21 +14,23 @@ import { playClick } from '../utils/soundEffects';
 export default function CivilianDashboard({
   gameState,
   myTeam,
-  unlockedHints,
+  allEvidence = [],
+  unlockedBatches = [1],
+  currentStage = 1,
+  completedStages = [],
+  unlockedHints = {},
   onSolveChallenge,
   onRequestHint,
   onOpenAccusationModal
 }) {
-  const [activeTool, setActiveTool] = useState('LOCATIONS');
+  const [activeTool, setActiveTool] = useState('PYTHON_LAB');
 
-  const visibleEvidence = myTeam?.visibleEvidence || [];
+  const visibleEvidence = allEvidence.filter(e => unlockedBatches.includes(e.batch));
   const integrity = myTeam?.integrity || 100;
-  const hintsRemaining = gameState?.hintsRemaining !== undefined ? gameState.hintsRemaining : 3;
-  const hintsUsedPerLocation = gameState?.hintsUsedPerLocation || {};
 
   return (
     <div className="space-y-4">
-      {/* Top HUD Banner (Minimal) */}
+      {/* Top HUD Banner */}
       <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 shadow-xl flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-cyan-950 border border-cyan-500 flex items-center justify-center text-cyan-400">
@@ -36,7 +38,7 @@ export default function CivilianDashboard({
           </div>
           <div>
             <div className="text-[10px] font-mono uppercase tracking-widest text-cyan-400">
-              Dr. Adrian Vale Murder Investigation
+              init Association // FALSE TRIALS
             </div>
             <h2 className="text-lg md:text-xl font-black text-slate-100">
               {myTeam?.name || 'Investigator Unit'}
@@ -44,8 +46,13 @@ export default function CivilianDashboard({
           </div>
         </div>
 
-        {/* Meters */}
+        {/* Status Indicators */}
         <div className="flex items-center gap-3 text-xs font-mono">
+          <div className="bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
+            <span className="text-slate-500 block text-[10px]">STAGE PROGRESS</span>
+            <span className="text-cyan-400 font-bold">Stage {Math.min(currentStage, 5)} / 5</span>
+          </div>
+
           <div className="bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
             <span className="text-slate-500 block text-[10px]">SCORE</span>
             <span className="text-emerald-400 font-bold">+{myTeam?.score || 0} PTS</span>
@@ -60,24 +67,24 @@ export default function CivilianDashboard({
         </div>
       </div>
 
-      {/* Navigation Tool Tabs (Minimal) */}
+      {/* Navigation Tool Tabs */}
       <div className="flex flex-wrap items-center gap-1.5 bg-slate-900/90 p-1.5 rounded-2xl border border-slate-800 text-xs font-mono">
         <button
-          onClick={() => { playClick(); setActiveTool('LOCATIONS'); }}
+          onClick={() => { playClick(); setActiveTool('PYTHON_LAB'); }}
           className={`px-3 py-1.5 rounded-xl font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-            activeTool === 'LOCATIONS' ? 'bg-cyan-600 text-white' : 'text-slate-400 hover:text-white'
+            activeTool === 'PYTHON_LAB' ? 'bg-cyan-600 text-white shadow-md shadow-cyan-950' : 'text-slate-400 hover:text-white'
           }`}
         >
-          <Cpu className="w-3.5 h-3.5" /> LOCATIONS & LABS
+          <Code2 className="w-3.5 h-3.5" /> PYTHON LAB (Stage {Math.min(currentStage, 5)}/5)
         </button>
 
         <button
           onClick={() => { playClick(); setActiveTool('EVIDENCE_BOARD'); }}
           className={`px-3 py-1.5 rounded-xl font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-            activeTool === 'EVIDENCE_BOARD' ? 'bg-cyan-600 text-white' : 'text-slate-400 hover:text-white'
+            activeTool === 'EVIDENCE_BOARD' ? 'bg-cyan-600 text-white shadow-md shadow-cyan-950' : 'text-slate-400 hover:text-white'
           }`}
         >
-          <Pin className="w-3.5 h-3.5" /> EVIDENCE ({visibleEvidence.length})
+          <Pin className="w-3.5 h-3.5" /> EVIDENCE DOSSIER ({visibleEvidence.length}/{allEvidence.length})
         </button>
 
         <button
@@ -111,26 +118,28 @@ export default function CivilianDashboard({
           onClick={() => { playClick(); onOpenAccusationModal(); }}
           className="ml-auto px-4 py-1.5 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-md shadow-rose-950"
         >
-          <ShieldAlert className="w-3.5 h-3.5" /> ACCUSE (MCQ)
+          <ShieldAlert className="w-3.5 h-3.5" /> TRIBUNAL ACCUSATION
         </button>
       </div>
 
       {/* Tool Viewport */}
-      {activeTool === 'LOCATIONS' && (
+      {activeTool === 'PYTHON_LAB' && (
         <CivilianCTFLab
-          challenges={gameState?.civilianLabChallenges}
-          hintsRemaining={hintsRemaining}
-          hintsUsedPerLocation={hintsUsedPerLocation}
-          unlockedHints={unlockedHints}
+          challenges={gameState?.challenges}
+          currentStage={currentStage}
+          completedStages={completedStages}
           onSolveChallenge={onSolveChallenge}
           onRequestHint={onRequestHint}
+          unlockedHints={unlockedHints}
         />
       )}
 
       {activeTool === 'EVIDENCE_BOARD' && (
         <EvidenceBoard
-          visibleEvidence={visibleEvidence}
-          onOpenAccusationModal={onOpenAccusationModal}
+          allEvidence={allEvidence}
+          unlockedBatches={unlockedBatches}
+          currentStage={currentStage}
+          onOpenAccusation={onOpenAccusationModal}
         />
       )}
 

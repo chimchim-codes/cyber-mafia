@@ -21,8 +21,8 @@ import LeaderboardView from './components/LeaderboardView';
 
 import { 
   INITIAL_SUSPECTS, 
-  INVESTIGATION_LOCATIONS, 
-  INITIAL_EVIDENCE, 
+  PYTHON_CHALLENGES, 
+  ALL_EVIDENCE_FILES, 
   createInitialGameState 
 } from './data/caseData';
 
@@ -55,7 +55,7 @@ export default function App() {
   const [gameState, setGameState] = useState(() => createInitialGameState());
   const [myTeam, setMyTeam] = useState(() => ({
     ...INITIAL_SUSPECTS[0],
-    visibleEvidence: INITIAL_EVIDENCE
+    visibleEvidence: ALL_EVIDENCE_FILES.filter(e => e.batch === 1)
   }));
   const [adminKey, setAdminKey] = useState(
     () => localStorage.getItem('cyber_mafia_admin_key') || ''
@@ -323,7 +323,7 @@ export default function App() {
       ...targetSuspect,
       name: playerName ? `${targetSuspect.name} [${playerName}]` : targetSuspect.name,
       playerName: playerName || targetSuspect.name,
-      visibleEvidence: INITIAL_EVIDENCE
+      visibleEvidence: ALL_EVIDENCE_FILES.filter(e => (gameState?.unlockedEvidenceBatches || [1]).includes(e.batch))
     });
 
     try {
@@ -453,13 +453,14 @@ export default function App() {
     }
   };
 
-  // Handler: Solve CTF Challenge
-  const handleSolveChallenge = async (challengeId, answer) => {
+  // Handler: Solve CTF / Python Challenge
+  const handleSolveChallenge = async (challengeId, answer, stageNumber) => {
     playClick();
-    const chal = gameState?.civilianLabChallenges?.find(c => c.id === challengeId);
+    const chal = PYTHON_CHALLENGES.find(c => c.id === challengeId);
+    if (!chal) return;
 
     if (socket && socket.connected) {
-      socket.emit('solve_civilian_challenge', { challengeId, answer });
+      socket.emit('solve_civilian_challenge', { challengeId, answer, stageNumber });
     }
 
     try {
@@ -470,7 +471,7 @@ export default function App() {
           action: 'SOLVE_CIVILIAN_CHALLENGE',
           sessionId,
           teamId: myTeam?.id,
-          payload: { challengeId, answer }
+          payload: { challengeId, answer, stageNumber }
         })
       });
     } catch (e) {
@@ -478,53 +479,73 @@ export default function App() {
     }
 
     // Client-side validation fallback
-    if (chal) {
-      const isCorrect = (answer || '').trim().toLowerCase() === (chal.expected || '').trim().toLowerCase();
+    const cleanAnswer = (answer || '').trim().toLowerCase();
+    const isExpected = cleanAnswer === chal.expected.toLowerCase();
+    const isAlternative = chal.acceptedAlternatives?.some(
+      alt => alt.toLowerCase() === cleanAnswer
+    );
 
-      if (isCorrect) {
-        playSuccess();
-        showToast(`Challenge Solved! +${chal.rewardScore || 100} PTS`, 'SUCCESS');
-        setGameState(prev => ({
+    if (isExpected || isAlternative) {
+      playSuccess();
+      const currentStg = chal.stageNumber || stageNumber || 1;
+      const nextStage = Math.min(currentStg + 1, 5);
+      const nextBatch = Math.min(chal.unlocksEvidenceBatch || (currentStg + 1), 6);
+
+      showToast(`Stage ${currentStg} Solved! +${chal.rewardScore} PTS. Evidence Batch ${nextBatch} Unlocked!`, 'SUCCESS');
+
+      setGameState(prev => {
+        const completed = prev?.completedStages || [];
+        const newCompleted = completed.includes(currentStg) ? completed : [...completed, currentStg];
+        const batches = prev?.unlockedEvidenceBatches || [1];
+        const newBatches = batches.includes(nextBatch) ? batches : [...batches, nextBatch];
+
+        return {
           ...prev,
-          civilianLabChallenges: prev.civilianLabChallenges?.map(c => 
-            c.id === challengeId ? { ...c, isSolved: true } : c
-          ),
+          currentStage: nextStage,
+          completedStages: newCompleted,
+          unlockedEvidenceBatches: newBatches,
           systemLogs: [
             {
               id: 'LOG-' + Date.now(),
               timestamp: new Date().toLocaleTimeString(),
               type: 'FORENSIC_SOLVE',
-              source: chal.locationName || 'LAB',
-              message: `Forensic puzzle solved! Unlocked clue: "${chal.evidenceClue}"`
+              source: `STAGE_${currentStg}`,
+              message: `Stage ${currentStg} (${chal.title}) solved! Output "${answer}" verified. Unlocked Evidence Batch ${nextBatch}.`
             },
-            ...(prev.systemLogs || [])
+            ...(prev?.systemLogs || [])
           ]
-        }));
+        };
+      });
 
-        setMyTeam(prev => ({
+      setMyTeam(prev => {
+        const nextBatch = Math.min(chal.unlocksEvidenceBatch || ((chal.stageNumber || 1) + 1), 6);
+        const currentBatches = gameState?.unlockedEvidenceBatches || [1];
+        const allBatches = currentBatches.includes(nextBatch) ? currentBatches : [...currentBatches, nextBatch];
+        return {
           ...prev,
-          score: (prev?.score || 0) + (chal.rewardScore || 100)
-        }));
-      } else {
-        playError();
-        showToast('Incorrect solution. Inspect the evidence and try again.', 'ERROR');
-      }
+          score: (prev?.score || 0) + (chal.rewardScore || 100),
+          visibleEvidence: ALL_EVIDENCE_FILES.filter(e => allBatches.includes(e.batch))
+        };
+      });
+    } else {
+      playError();
+      showToast('Incorrect solution. Inspect the evidence and try again.', 'ERROR');
     }
   };
 
-  // Handler: Request Hint (1 hint per location, 3 per game)
-  const handleRequestHint = (locationId) => {
+  // Handler: Request Hint (1 hint per stage, 3 per game)
+  const handleRequestHint = (challengeId) => {
     playClick();
-    const loc = INVESTIGATION_LOCATIONS.find(l => l.id === locationId);
-    if (!loc) return;
+    const chal = PYTHON_CHALLENGES.find(c => c.id === challengeId);
+    if (!chal) return;
 
     if (socket && socket.connected) {
-      socket.emit('request_location_hint', { locationId });
+      socket.emit('request_location_hint', { locationId: challengeId });
     }
 
     // Client-side fallback
-    if (unlockedHints[locationId]) {
-      showToast('Hint already unlocked for this location.', 'INFO');
+    if (unlockedHints[challengeId]) {
+      showToast('Hint already unlocked for this stage.', 'INFO');
       return;
     }
 
@@ -535,11 +556,11 @@ export default function App() {
     }
 
     playSuccess();
-    setUnlockedHints(prev => ({ ...prev, [locationId]: loc.hint }));
+    setUnlockedHints(prev => ({ ...prev, [challengeId]: chal.hint }));
     setGameState(prev => ({
       ...prev,
       hintsRemaining: Math.max(0, (prev?.hintsRemaining ?? 3) - 1),
-      hintsUsedPerLocation: { ...(prev?.hintsUsedPerLocation || {}), [locationId]: true }
+      hintsUsedPerChallenge: { ...(prev?.hintsUsedPerChallenge || {}), [challengeId]: true }
     }));
     showToast(`Hint unlocked (${Math.max(0, (gameState?.hintsRemaining ?? 3) - 1)} remaining)`, 'SUCCESS');
   };
@@ -591,7 +612,7 @@ export default function App() {
 
       const report = [
         `======================================================================`,
-        `  INTERNAL TECH FEST: DR. ADRIAN VALE MURDER CASE - TRIBUNAL RECORD   `,
+        `  INIT ASSOCIATION: FALSE TRIALS - HIGH TRIBUNAL RECORD               `,
         `======================================================================`,
         `Investigator / Team : ${myTeam?.name || 'Investigator'} (${myTeam?.id || 'S01'})`,
         `Verdict             : ${isSolved ? 'CASE SOLVED - ELENA WARD GUILTY AS CHARGED' : 'INCORRECT ACCUSATION'}`,
@@ -607,7 +628,7 @@ export default function App() {
         `  2. Method/Weapon  : ${answers.q2 || 'None'} -> Poison administered through a drink (${isQ2 ? 'CORRECT' : 'WRONG'})`,
         `  3. Motive         : ${answers.q3 || 'None'} -> Preventing Adrian from exposing unauthorized exports (${isQ3 ? 'CORRECT' : 'WRONG'})`,
         `  4. Accomplice     : ${answers.q4 || 'None'} -> No accomplice established (${isQ4 ? 'CORRECT' : 'WRONG'})`,
-        `  5. Evidence       : [${q5Text}] -> MED-11, DATA-09, GM-20, GM-21 (${isQ5 ? 'CORRECT' : 'WRONG'})`,
+        `  5. Evidence       : [${q5Text}] -> TOX-102, MEM-501, WIT-503, BIO-602 (${isQ5 ? 'CORRECT' : 'WRONG'})`,
         `======================================================================`,
         `Generated at: ${new Date().toISOString()}`
       ].join('\n');
@@ -861,7 +882,7 @@ export default function App() {
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
             <span className="font-black text-base md:text-lg tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-rose-400">
-              CYBER FORENSICS // DR. ADRIAN VALE CASE
+              init Association // FALSE TRIALS
             </span>
           </div>
         </div>
@@ -951,6 +972,10 @@ export default function App() {
           <CivilianDashboard
             gameState={gameState}
             myTeam={myTeam}
+            allEvidence={ALL_EVIDENCE_FILES}
+            unlockedBatches={gameState?.unlockedEvidenceBatches || [1]}
+            currentStage={gameState?.currentStage || 1}
+            completedStages={gameState?.completedStages || []}
             unlockedHints={unlockedHints}
             onSolveChallenge={handleSolveChallenge}
             onRequestHint={handleRequestHint}

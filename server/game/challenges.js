@@ -191,29 +191,97 @@ function generateHackerChallenge(attackType, targetTeam, attackerTeam) {
   }
 }
 
-// Generate Civilian CTF Lab Challenges from Locations
+const PYTHON_CHALLENGES = [
+  {
+    id: 'CHAL-PY-1',
+    stageNumber: 1,
+    title: 'Find the Bypass Key',
+    concept: 'String manipulation & .split()',
+    difficulty: 'LEVEL 1 // FOUNDATION',
+    rewardScore: 100,
+    forensicContext: 'A corrupted gateway buffer packet was recovered from the firewall ingress router. Extract the administrative bypass key from the raw HTTP header using string operations.',
+    instructions: 'Use Python string methods (such as .split()) to isolate the exact value of the "X-Bypass-Key" header.',
+    initialCode: `# Challenge 1: Find the Bypass Key\n# Extract the value of X-Bypass-Key from the raw HTTP header string.\n\nheader = "Host: sec.local\\r\\nX-Bypass-Key: BYPASS-ELENA-WARD-99\\r\\nUser-Agent: Terminal/1.0"\n\n# TODO: Use string .split() to isolate and print the key value\nlines = header.split("\\r\\n")\nbypass_key = ""\nfor line in lines:\n    if line.startswith("X-Bypass-Key:"):\n        bypass_key = line.split(": ")[1]\n\nprint(bypass_key)\n`,
+    expected: 'BYPASS-ELENA-WARD-99',
+    acceptedAlternatives: ['BYPASS-ELENA-WARD', 'BYPASS-ELENA-WARD-99'],
+    hint: 'Split the header on "\\r\\n" or look for the line starting with "X-Bypass-Key:". Split that line on ": " to obtain the key.',
+    unlocksEvidenceBatch: 2,
+    unlockSummary: 'Unlocks Batch 2: Police interview with Dr. Sen, Ingress Syslog dump, and Felix Grant\'s shift notes.'
+  },
+  {
+    id: 'CHAL-PY-2',
+    stageNumber: 2,
+    title: 'Identify the Suspicious Login',
+    concept: 'Lists, Loops & Conditional Statements',
+    difficulty: 'LEVEL 2 // INTERMEDIATE',
+    rewardScore: 100,
+    forensicContext: 'Noah Mercer\'s workstation auth logs recorded several login attempts right before terminal history was wiped. Identify the username that recorded a "FAILED" login event.',
+    instructions: 'Iterate over the list of login records using a for loop and if statement to find and print the username with a "FAILED" status.',
+    initialCode: `# Challenge 2: Identify the Suspicious Login\n# Search through login_records to find the username with "FAILED" status.\n\nlogin_records = [\n    ("mira_sen", "SUCCESS"),\n    ("noah_mercer", "SUCCESS"),\n    ("felix_grant", "SUCCESS"),\n    ("guest_temp", "FAILED"),\n    ("elena_ward", "SUCCESS")\n]\n\n# TODO: Loop over login_records and find the failed username\nsuspicious_user = ""\nfor user, status in login_records:\n    if status == "FAILED":\n        suspicious_user = user\n        break\n\nprint(suspicious_user)\n`,
+    expected: 'guest_temp',
+    acceptedAlternatives: ['guest_temp', '"guest_temp"'],
+    hint: 'Iterate through each tuple (user, status) in login_records. Check if status == "FAILED", then print that user.',
+    unlocksEvidenceBatch: 3,
+    unlockSummary: 'Unlocks Batch 3: Noah Mercer\'s deleted bash history, Noah\'s interrogation transcript, and Dr. Sen\'s patent notice.'
+  },
+  {
+    id: 'CHAL-PY-3',
+    stageNumber: 3,
+    title: 'Find the Impostor',
+    concept: 'Membership Checks (in / not in) & Collections',
+    difficulty: 'LEVEL 3 // ADVANCED',
+    rewardScore: 100,
+    forensicContext: 'Core database logs show an active account that executed elevated privileges. Cross-reference the logged usernames against the authorized personnel list to identify the unlisted impostor.',
+    instructions: 'Identify which username in `logged_users` does NOT appear in `authorized_users`. Print the impostor\'s username.',
+    initialCode: `# Challenge 3: Find the Impostor\n# Find the username in logged_users that is absent from authorized_users.\n\nauthorized_users = ["mira_sen", "noah_mercer", "felix_grant", "elena_ward", "adrian_vale"]\nlogged_users = ["mira_sen", "felix_grant", "shadow_operator", "elena_ward"]\n\n# TODO: Use a membership check (user not in authorized_users)\nimpostor = ""\nfor user in logged_users:\n    if user not in authorized_users:\n        impostor = user\n        break\n\nprint(impostor)\n`,
+    expected: 'shadow_operator',
+    acceptedAlternatives: ['shadow_operator', '"shadow_operator"'],
+    hint: 'Use `if user not in authorized_users:` inside a loop over `logged_users` to spot the unauthorized account.',
+    unlocksEvidenceBatch: 4,
+    unlockSummary: 'Unlocks Batch 4: Rogue user database trace, Felix Grant\'s bribe confession, and chemical quarantine verification.'
+  },
+  {
+    id: 'CHAL-PY-4',
+    stageNumber: 4,
+    title: 'Crack the Access Rule',
+    concept: 'Boolean Logic & Dual-Condition Rules',
+    difficulty: 'LEVEL 4 // SECURE ACCESS',
+    rewardScore: 100,
+    forensicContext: 'Adrian\'s private research sanctum was locked by an automated dual-authentication policy. Test the rule to determine the exact return status for user "elena_ward" with access code "SEC-7702".',
+    instructions: 'Evaluate the access function. Ensure it requires BOTH that the user is authorized AND the code matches the valid code, then print the result.',
+    initialCode: `# Challenge 4: Crack the Access Rule\n# Grant access only when user is authorized AND code matches valid_code.\n\ndef check_access(user, code):\n    authorized_users = ["elena_ward", "adrian_vale"]\n    valid_code = "SEC-7702"\n    \n    # Dual-condition verification\n    if user in authorized_users and code == valid_code:\n        return "ACCESS_GRANTED"\n    else:\n        return "ACCESS_DENIED"\n\n# Evaluate for executive Elena Ward with code SEC-7702\nresult = check_access("elena_ward", "SEC-7702")\nprint(result)\n`,
+    expected: 'ACCESS_GRANTED',
+    acceptedAlternatives: ['ACCESS_GRANTED', '"ACCESS_GRANTED"'],
+    hint: 'Check if both conditions (user in authorized_users and code == valid_code) evaluate to True. It returns "ACCESS_GRANTED".',
+    unlocksEvidenceBatch: 5,
+    unlockSummary: 'Unlocks Batch 5: Elena\'s deleted offshore emails, door override logs, and the lounge witness statement.'
+  },
+  {
+    id: 'CHAL-PY-5',
+    stageNumber: 5,
+    title: 'Server Access Investigation',
+    concept: 'Structured Telemetry Log Parsing & Filtering',
+    difficulty: 'LEVEL 5 // SENIOR FORENSICS',
+    rewardScore: 100,
+    forensicContext: 'Below are the structured authentication logs from the central gateway on the morning of the incident. Filter through timestamps, status codes (200, 401, 403), and messages to identify who completed the LATEST SUCCESSFUL login (status 200), ignoring all later failed or denied attempts.',
+    instructions: 'Filter the list for entries where `status == 200`. Find the record with the latest timestamp and print the username of that user.',
+    initialCode: `# Challenge 5: Server Access Investigation\n# Analyze structured authentication telemetry.\n# Identify the username responsible for the LATEST SUCCESSFUL login (status == 200).\n# Ignore subsequent failed (401) or forbidden (403) events.\n\nauth_logs = [\n    {"timestamp": "08:12:00", "user": "mira_sen", "status": 200, "ip": "10.0.1.12", "msg": "Auth OK - Workstation B"},\n    {"timestamp": "08:19:30", "user": "noah_mercer", "status": 200, "ip": "10.0.1.45", "msg": "Auth OK - Server Sub-1"},\n    {"timestamp": "08:24:10", "user": "felix_grant", "status": 200, "ip": "10.0.2.19", "msg": "Auth OK - Security Desk"},\n    {"timestamp": "08:31:45", "user": "elena_ward", "status": 200, "ip": "10.0.4.01", "msg": "Auth OK - Executive Gateway"},\n    {"timestamp": "08:34:10", "user": "felix_grant", "status": 401, "ip": "10.0.2.19", "msg": "Auth Failed - Bad Pin"},\n    {"timestamp": "08:38:00", "user": "mira_sen", "status": 403, "ip": "10.0.1.12", "msg": "Access Denied - Lockdown Active"},\n    {"timestamp": "08:42:15", "user": "noah_mercer", "status": 401, "ip": "10.0.1.45", "msg": "Auth Failed - Session Terminated"}\n]\n\n# TODO: Filter where status == 200, and find user with maximum timestamp\nsuccessful_logins = [log for log in auth_logs if log["status"] == 200]\nlatest_successful = max(successful_logins, key=lambda x: x["timestamp"])\n\nprint(latest_successful["user"])\n`,
+    expected: 'elena_ward',
+    acceptedAlternatives: ['elena_ward', '"elena_ward"'],
+    hint: 'Filter for entries where status == 200. The timestamps are 08:12:00, 08:19:30, 08:24:10, and 08:31:45. 08:31:45 is the latest, belonging to elena_ward.',
+    unlocksEvidenceBatch: 6,
+    unlockSummary: 'Unlocks Final Batch 6: Master auth telemetry ledger, biometric fingerprint match report, and High Tribunal dossier!'
+  }
+];
+
+// Generate Civilian CTF Lab Challenges from Locations & Python Stages
 function generateCivilianLabChallenges() {
-  return INVESTIGATION_LOCATIONS.map(loc => ({
-    id: loc.challenge.id,
-    locationId: loc.id,
-    locationName: loc.name,
-    room: loc.room,
-    category: loc.challenge.category,
-    title: `${loc.name} // ${loc.challenge.title}`,
-    difficulty: loc.challenge.difficulty,
-    rewardScore: loc.challenge.rewardScore,
-    description: loc.challenge.description,
-    prompt: loc.challenge.prompt,
-    expected: loc.challenge.expected,
-    hint: loc.hint,
-    unlockedEvidenceType: loc.clueId,
-    clueId: loc.clueId,
-    evidenceClue: `${loc.clueId} — ${loc.clueTitle}: ${loc.clueDescription}`
-  }));
+  return PYTHON_CHALLENGES;
 }
 
 module.exports = {
   INVESTIGATION_LOCATIONS,
+  PYTHON_CHALLENGES,
   generateHackerChallenge,
   generateCivilianLabChallenges
 };

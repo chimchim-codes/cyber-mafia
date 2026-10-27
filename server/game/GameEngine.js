@@ -362,7 +362,7 @@ class GameEngine extends EventEmitter {
 
     const report = [
       `======================================================================`,
-      `  INTERNAL TECH FEST: DR. ADRIAN VALE MURDER CASE - TRIBUNAL RECORD   `,
+      `  INIT ASSOCIATION: FALSE TRIALS - HIGH TRIBUNAL RECORD               `,
       `======================================================================`,
       `Investigator / Team : ${teamName || 'Investigator'} (${teamId || 'SOLO'})`,
       `Verdict             : ${isSolved ? 'CASE SOLVED - ELENA WARD GUILTY AS CHARGED' : 'INCORRECT ACCUSATION'}`,
@@ -378,7 +378,7 @@ class GameEngine extends EventEmitter {
       `  2. Method/Weapon  : ${answers.q2 || 'None'} -> Poison administered through a drink (${isQ2 ? 'CORRECT' : 'WRONG'})`,
       `  3. Motive         : ${answers.q3 || 'None'} -> Preventing Adrian from exposing unauthorized exports (${isQ3 ? 'CORRECT' : 'WRONG'})`,
       `  4. Accomplice     : ${answers.q4 || 'None'} -> No accomplice established (${isQ4 ? 'CORRECT' : 'WRONG'})`,
-      `  5. Evidence       : [${q5Text}] -> MED-11, DATA-09, GM-20, GM-21 (${isQ5 ? 'CORRECT' : 'WRONG'})`,
+      `  5. Evidence       : [${q5Text}] -> TOX-102, MEM-501, WIT-503, BIO-602 (${isQ5 ? 'CORRECT' : 'WRONG'})`,
       `======================================================================`,
       `Generated at: ${new Date().toISOString()}`
     ].join('\n');

@@ -13,6 +13,86 @@ class EvidenceManager {
   initCaseEvidence() {
     this.evidenceList = [
       {
+        id: 'TOX-102',
+        title: 'Forensic Toxicology Screen Protocol',
+        timestamp: '09:15:00',
+        epoch: Date.now(),
+        targetTeamId: 'Dr. Adrian Vale',
+        targetTeamName: 'Victim Dossier',
+        originNodeHint: 'Biochemical Pathology Unit',
+        attackType: 'POISONING',
+        attackSignature: 'ORGANOPHOSPHATE',
+        route: '/lab/spec/tox-102',
+        moduleAffected: 'Toxicology',
+        packetSignature: '0x99A1',
+        baseConfidence: 99,
+        unlockedBy: ['ALL'],
+        cluesFound: [
+          'TOX-102 — Forensic Pathology & Toxicology Screening Protocol.',
+          'Fatal concentration of organophosphate neurotoxin administered through an ingested hot beverage.'
+        ]
+      },
+      {
+        id: 'MEM-501',
+        title: 'Recovered Deleted Emails // Offshore Syndicate',
+        timestamp: '08:05:12',
+        epoch: Date.now(),
+        targetTeamId: 'Executive Terminal',
+        targetTeamName: 'Administration',
+        originNodeHint: 'Admin Suite 404',
+        attackType: 'MOTIVE_EVIDENCE',
+        attackSignature: 'OFFSHORE-SYNDICATE',
+        route: '/mail/drafts/archive',
+        moduleAffected: 'Governance',
+        packetSignature: '0x77F0',
+        baseConfidence: 98,
+        unlockedBy: ['ALL'],
+        cluesFound: [
+          'MEM-501 — Recovered deleted emails exposing Elena\'s $12M model export scheme.',
+          'Elena Ward: "I will handle Adrian personally before 08:35. The 09:00 audit will not take place."'
+        ]
+      },
+      {
+        id: 'WIT-503',
+        title: 'Staff Witness Deposition // Executive Lounge',
+        timestamp: '11:45:00',
+        epoch: Date.now(),
+        targetTeamId: 'Hospitality Area',
+        targetTeamName: 'Executive Lounge',
+        originNodeHint: 'Pantry Station',
+        attackType: 'WITNESS_STATEMENT',
+        attackSignature: 'COFFEE-DELIVERY',
+        route: '/lounge/cctv/cam02',
+        moduleAffected: 'Witness Dispatch',
+        packetSignature: '0x44C1',
+        baseConfidence: 95,
+        unlockedBy: ['ALL'],
+        cluesFound: [
+          'WIT-503 — Lounge Attendant Clara Vance statement.',
+          'Elena Ward personally prepared two Colombian roast coffees at 08:26 and carried them to Adrian\'s office.'
+        ]
+      },
+      {
+        id: 'BIO-602',
+        title: 'Forensic Latent Print & DNA Match Report',
+        timestamp: '12:05:00',
+        epoch: Date.now(),
+        targetTeamId: 'Crime Lab Forensics',
+        targetTeamName: 'Physical Evidence',
+        originNodeHint: 'Fingerprint & DNA Unit',
+        attackType: 'BIOMETRIC_MATCH',
+        attackSignature: 'DNA-AFIS-MATCH',
+        route: '/lab/afis/bio-602',
+        moduleAffected: 'Forensic Lab',
+        packetSignature: '0x88D2',
+        baseConfidence: 100,
+        unlockedBy: ['ALL'],
+        cluesFound: [
+          'BIO-602 — Latent fingerprint and epithelial DNA report.',
+          'AFIS match confirms Elena Ward\'s prints and high-yield DNA on the handle of the poisoned coffee mug.'
+        ]
+      },
+      {
         id: 'MED-11',
         title: 'Medical Report: Toxicology Screen',
         timestamp: '09:15:00',
