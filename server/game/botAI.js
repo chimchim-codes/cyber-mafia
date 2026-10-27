@@ -12,6 +12,9 @@ class BotAI {
     if (this.interval) clearInterval(this.interval);
     this.isActive = true;
     this.interval = setInterval(() => this.tick(), 7000);
+    if (this.interval && this.interval.unref) {
+      this.interval.unref();
+    }
   }
 
   stop() {

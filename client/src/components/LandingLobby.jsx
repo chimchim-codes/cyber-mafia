@@ -1,6 +1,6 @@
 // client/src/components/LandingLobby.jsx
 import React, { useState } from 'react';
-import { Users, Terminal, Play } from 'lucide-react';
+import { Users, Terminal, Play, Settings } from 'lucide-react';
 import { playClick } from '../utils/soundEffects';
 
 const FALLBACK_SUSPECTS = [
@@ -10,7 +10,7 @@ const FALLBACK_SUSPECTS = [
   { id: 'S04', name: 'Elena Ward', title: 'Director of Operations (Person of Interest)' }
 ];
 
-export default function LandingLobby({ gameState, onJoinTeam, onStartGame, isAdmin }) {
+export default function LandingLobby({ gameState, onJoinTeam, onStartGame, isAdmin, onOpenAdmin, isStartingGame }) {
   const [playerName, setPlayerName] = useState('');
   const [selectedTeamId, setSelectedTeamId] = useState('S01');
 
@@ -83,14 +83,37 @@ export default function LandingLobby({ gameState, onJoinTeam, onStartGame, isAdm
           </div>
         </div>
 
-        {/* Action Button */}
-        <button
-          onClick={() => handleStart(selectedTeamId)}
-          className="w-full py-3 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-bold rounded-xl text-xs uppercase tracking-wider shadow-lg shadow-cyan-950 flex items-center justify-center gap-2 cursor-pointer transition-all"
-        >
-          <Play className="w-4 h-4 fill-white" />
-          Begin Investigation
-        </button>
+        {/* Action Buttons & Admin Controls */}
+        <div className="space-y-3 pt-2 border-t border-slate-800">
+          <button
+            onClick={() => handleStart(selectedTeamId)}
+            disabled={isStartingGame}
+            className="w-full py-3 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 disabled:opacity-50 text-white font-bold rounded-xl text-xs uppercase tracking-wider shadow-lg shadow-cyan-950 flex items-center justify-center gap-2 cursor-pointer transition-all"
+          >
+            <Play className="w-4 h-4 fill-white" />
+            {isStartingGame ? 'Starting Investigation...' : 'Begin Investigation'}
+          </button>
+
+          {onOpenAdmin && (
+            <div className="flex justify-end pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  playClick();
+                  onOpenAdmin();
+                }}
+                className={`text-xs px-3 py-1.5 rounded-lg border font-mono transition-colors flex items-center gap-1.5 cursor-pointer ${
+                  isAdmin
+                    ? 'bg-amber-950/60 border-amber-600 text-amber-300 hover:bg-amber-900/60'
+                    : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white hover:border-slate-700'
+                }`}
+              >
+                <Settings className={`w-3.5 h-3.5 ${isAdmin ? 'text-amber-400' : 'text-slate-500'}`} />
+                <span>{isAdmin ? 'Admin Console' : 'Admin Login'}</span>
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
