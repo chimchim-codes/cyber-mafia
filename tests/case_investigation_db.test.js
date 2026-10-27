@@ -189,4 +189,92 @@ describe('Database Integration: False Trials Murder Investigation', () => {
     assert.equal(responseBody.isSolved, false);
     assert.ok(responseBody.score < 5);
   });
+
+  test('api/game-action strictly blocks duplicate accusation submissions', async () => {
+    let responseStatus = null;
+    let responseBody = null;
+
+    const createReq = () => ({
+      method: 'POST',
+      headers: {},
+      body: {
+        action: 'SUBMIT_MCQ_ACCUSATION',
+        sessionId,
+        teamId: 'S01',
+        payload: {
+          answers: {
+            q1: 'A', // Incorrect suspect so match stays RUNNING
+            q2: 'A',
+            q3: 'B',
+            q4: 'D',
+            q5: ['A']
+          }
+        }
+      }
+    });
+
+    const createRes = () => ({
+      setHeader: () => {},
+      status: (code) => {
+        responseStatus = code;
+        return {
+          json: (data) => { responseBody = data; return createRes(); },
+          end: () => createRes()
+        };
+      }
+    });
+
+    // First submission must succeed with partial score
+    await gameActionHandler(createReq(), createRes());
+    assert.equal(responseStatus, 200);
+    assert.equal(responseBody.isSolved, false);
+    assert.ok(responseBody.score < 5);
+
+    // Second submission by same team must be rejected with 400 and alreadySubmitted flag
+    responseStatus = null;
+    responseBody = null;
+    await gameActionHandler(createReq(), createRes());
+    assert.equal(responseStatus, 400);
+    assert.equal(responseBody.alreadySubmitted, true);
+    assert.match(responseBody.error, /only one accusation submission/i);
+  });
+
+  test('getLeaderboard calculates currentRound, elapsedSeconds, timeFormatted, and hasSubmitted', async () => {
+    await gameService.joinTeam(sessionId, 'Investigator_1', 'S01');
+    await gameService.joinTeam(sessionId, 'Investigator_2', 'S02');
+
+    // Simulate S01 solving stage 1 and 2
+    const supabase = getServiceClient();
+    await supabase.from('teams').update({
+      completed_stages: 2,
+      score: 250,
+      has_submitted_accusation: true,
+      submitted_at: new Date().toISOString()
+    }).eq('session_id', sessionId).eq('id', 'S01');
+
+    await supabase.from('teams').update({
+      completed_stages: 1,
+      score: 100,
+      has_submitted_accusation: false
+    }).eq('session_id', sessionId).eq('id', 'S02');
+
+    const leaderboard = await gameService.getLeaderboard(sessionId);
+    assert.ok(Array.isArray(leaderboard));
+    assert.ok(leaderboard.length >= 2);
+
+    const s01 = leaderboard.find(t => t.teamId === 'S01');
+    const s02 = leaderboard.find(t => t.teamId === 'S02');
+
+    assert.ok(s01);
+    assert.ok(s02);
+
+    assert.equal(s01.completedLevels, 2);
+    assert.equal(s01.currentRound, 3);
+    assert.equal(s01.hasSubmitted, true);
+    assert.ok(typeof s01.timeFormatted === 'string');
+
+    assert.equal(s02.completedLevels, 1);
+    assert.equal(s02.currentRound, 2);
+    assert.equal(s02.hasSubmitted, false);
+  });
 });
