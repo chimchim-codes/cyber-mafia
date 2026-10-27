@@ -57,6 +57,32 @@ Supports full conversation lifecycle states:
 
 ---
 
+## 🧠 AI Algorithms, Heuristics & Constraint Satisfaction (CSP)
+
+For full mathematical proofs, complexity analysis, and sequence diagrams, refer to [**ALGORITHMS_AND_AI_ARCHITECTURE.md**](ALGORITHMS_AND_AI_ARCHITECTURE.md).
+
+### 1. Informed (Heuristic) Search vs. Uninformed Search
+- **Why Not Uninformed Search?** Algorithms like BFS and DFS suffer from exponential time complexity $O(b^d)$ and lack domain context, leading to unacceptable latency and poor accuracy for real-time document search.
+- **Informed Heuristic Search:** SupportHub uses a multi-factor heuristic scoring function $f(n) = g(n) + h(n)$ combining **Jaccard Token Similarity**, **Keyword Match Density**, and **Category Alignment**:
+  $$h(Q, F_i) = w_1 \cdot \text{Jaccard}(T_Q, K_i) + w_2 \cdot \text{KeywordFrequency}(T_Q, T_{Q_i}) + w_3 \cdot \text{CategoryBoost}(C_Q, C_i)$$
+- **Confidence Pruning:** Employs Best-First Search with threshold pruning. If $\max(h) < \theta$, the engine automatically avoids hallucination and prompts for clarification or escalates to a human agent.
+
+### 2. Constraint Satisfaction Problem (CSP) Formulation
+Support ticket routing and multi-agent queue balancing are modeled as a formal CSP $\langle X, D, C \rangle$:
+- **Variables ($X$):** Ticket $T_i$, State $S_i$, Assigned Agent $A_i$, Priority $P_i$, Agent Workload $W_j$.
+- **Domains ($D$):** $S_i \in \{\text{AI Active, Waiting for Agent, Agent Connected, Resolved, Closed}\}$, $A_i \in \{\text{Agent}_1, \dots, \text{Agent}_m, \text{null}\}$.
+- **Hard Constraints ($C$):**
+  1. *Capacity Constraint:* Each agent has a maximum concurrent capacity limit ($\sum \le \text{MaxCapacity}_j$).
+  2. *Availability Constraint:* Assigned agents must have active online WebSocket connections.
+  3. *Competency Constraint:* High-severity / urgent tickets require agents with appropriate tier permissions.
+  4. *Mutual State Dependency:* A conversation cannot be in `Agent Connected` without a valid assigned agent.
+- **CSP Solving Techniques:**
+  - **Forward Checking & AC-3:** Dynamically prunes full-capacity agents from the domain of pending tickets.
+  - **Minimum Remaining Values (MRV):** Prioritizes tickets with the most restricted agent domains (urgent/complex issues first).
+  - **Least Constraining Value (LCV):** Assigns tickets to the least-loaded eligible agent to preserve flexibility for future surges.
+
+---
+
 ## 🛠️ Technology Stack
 
 | Layer | Technology |
