@@ -5,7 +5,8 @@ import { io } from 'socket.io-client';
 import { createClient } from '@supabase/supabase-js';
 import { 
   Shield, Skull, Terminal, Volume2, VolumeX, Settings, 
-  Clock, Award, Trophy, Radio, AlertTriangle, Play, Pause, HelpCircle, X, Maximize 
+  Clock, Award, Trophy, Radio, AlertTriangle, Play, Pause, HelpCircle, X, Maximize,
+  Monitor, LogOut
 } from 'lucide-react';
 
 import LandingLobby from './components/LandingLobby';
@@ -44,17 +45,40 @@ const supabase = (supabaseUrl && supabaseAnonKey)
   ? createClient(supabaseUrl, supabaseAnonKey) 
   : null;
 
-// Optional Socket fallback for local Node dev
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || (typeof window !== 'undefined' ? window.location.origin : '');
+// Socket.IO configuration:
+// 1. If VITE_SERVER_URL or VITE_SOCKET_URL is set, connect to that persistent backend.
+// 2. In local development on localhost/127.0.0.1, connect to the local Node server (http://localhost:3001).
+// 3. On Vercel / serverless production WITHOUT a separate persistent backend, do NOT attempt
+//    WebSocket connection to the Vercel domain (Vercel serverless functions do not support WebSockets).
+//    Instead, the application operates in serverless mode with Supabase Realtime & HTTP APIs.
+const isLocalhost = typeof window !== 'undefined' && (
+  window.location.hostname === 'localhost' ||
+  window.location.hostname === '127.0.0.1' ||
+  window.location.hostname === '0.0.0.0'
+);
+const customServerUrl = (import.meta.env.VITE_SERVER_URL || import.meta.env.VITE_SOCKET_URL || '').trim();
+const targetSocketUrl = customServerUrl
+  ? customServerUrl
+  : (isLocalhost ? (window.location.port === '3001' ? window.location.origin : 'http://localhost:3001') : null);
+
 let socket = null;
-try {
-  socket = io(SERVER_URL, {
-    transports: ['websocket', 'polling'],
-    autoConnect: true,
-    timeout: 5000
-  });
-} catch (e) {
-  console.warn('Socket connection not initialized:', e);
+if (targetSocketUrl) {
+  try {
+    socket = io(targetSocketUrl, {
+      transports: ['websocket', 'polling'],
+      autoConnect: true,
+      reconnection: true,
+      reconnectionAttempts: 3, // Prevent infinite reconnection failure loops
+      reconnectionDelay: 2000,
+      reconnectionDelayMax: 5000,
+      timeout: 4000
+    });
+    socket.on('connect_error', (err) => {
+      console.warn(`[Socket.IO] Backend at ${targetSocketUrl} is unreachable: ${err.message}. Operating in serverless API mode.`);
+    });
+  } catch (e) {
+    console.warn('Socket connection not initialized:', e);
+  }
 }
 
 const DEFAULT_SESSION_ID = 'default-cyber-session';
