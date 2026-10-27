@@ -609,7 +609,7 @@ class GameService {
 
     const { data: teams, error } = await supabase
       .from('teams')
-      .select('id, name, score, integrity, is_eliminated, updated_at, has_submitted_accusation, accusation_submitted_at, accusation_score')
+      .select('id, name, score, integrity, is_eliminated, updated_at, has_submitted_accusation, accusation_submitted_at, accusation_score, completed_stages, completed_levels')
       .eq('session_id', sessionId);
 
     if (error || !teams) {
@@ -644,7 +644,9 @@ class GameService {
 
     // Calculate time taken and round info for each team
     const teamStats = teams.map(t => {
-      const comp = progressMap[t.id]?.completedLevels || 0;
+      const comp = (t.completed_stages !== undefined && t.completed_stages !== null)
+        ? t.completed_stages
+        : (progressMap[t.id]?.completedLevels || 0);
       const currentRound = Math.min(comp + 1, 5);
       const checkpointTime = progressMap[t.id]?.latestCheckpoint || t.updated_at || '';
       

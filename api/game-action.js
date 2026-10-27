@@ -136,6 +136,23 @@ module.exports = async function handler(req, res) {
       return res.status(400).json({ success: false, message: 'Match is currently PAUSED. Actions are frozen.' });
     }
     if (session.status === 'COMPLETED') {
+      if (action === 'SUBMIT_MCQ_ACCUSATION' && teamId) {
+        const { data: teamData } = await supabase
+          .from('teams')
+          .select('*')
+          .eq('session_id', sessionId)
+          .eq('id', teamId)
+          .single();
+
+        if (teamData?.has_submitted_accusation) {
+          return res.status(400).json({
+            success: false,
+            alreadySubmitted: true,
+            error: 'Only one accusation submission is permitted per squad per match.',
+            message: 'Only one accusation submission is permitted per squad per match.'
+          });
+        }
+      }
       return res.status(400).json({ success: false, message: 'Match is COMPLETED. No further actions permitted.' });
     }
 
@@ -261,18 +278,30 @@ module.exports = async function handler(req, res) {
       }
 
       // Enforce single submission per team
-      const { data: teamData } = await supabase
+      let { data: teamData } = await supabase
         .from('teams')
         .select('*')
         .eq('session_id', sessionId)
         .eq('id', teamId)
         .single();
 
+      if (!teamData && teamId) {
+        await gameService.joinTeam(sessionId, `Investigator_${teamId}`, teamId);
+        const resTeam = await supabase
+          .from('teams')
+          .select('*')
+          .eq('session_id', sessionId)
+          .eq('id', teamId)
+          .single();
+        teamData = resTeam.data;
+      }
+
       if (teamData?.has_submitted_accusation) {
         return res.status(400).json({
           success: false,
           alreadySubmitted: true,
-          message: 'Your squad has already submitted an accusation. Only 1 submission is permitted per match.'
+          error: 'Only one accusation submission is permitted per squad per match.',
+          message: 'Only one accusation submission is permitted per squad per match.'
         });
       }
 
@@ -288,11 +317,23 @@ module.exports = async function handler(req, res) {
 
       // Mark team as having submitted permanently
       if (teamId) {
-        await supabase.from('teams').update({
-          has_submitted_accusation: true,
-          accusation_submitted_at: nowIso,
-          accusation_score: correctCount
-        }).eq('session_id', sessionId).eq('id', teamId);
+        if (teamData) {
+          await supabase.from('teams').update({
+            has_submitted_accusation: true,
+            accusation_submitted_at: nowIso,
+            accusation_score: correctCount
+          }).eq('session_id', sessionId).eq('id', teamId);
+        } else {
+          await supabase.from('teams').insert({
+            session_id: sessionId,
+            id: teamId,
+            name: `Squad ${teamId}`,
+            score: 0,
+            has_submitted_accusation: true,
+            accusation_submitted_at: nowIso,
+            accusation_score: correctCount
+          });
+        }
       }
 
       // Alert the Admin immediately
