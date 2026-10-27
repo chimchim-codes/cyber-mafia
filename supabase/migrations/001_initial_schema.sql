@@ -1,11 +1,8 @@
 -- =========================================================================
 -- CYBER MAFIA: Supabase PostgreSQL Schema & Realtime Setup
 -- Phase 2 Durable Entities, Constraints, Triggers, and RLS Policies
+-- Best-Practice Hardened for Supabase (RLS, Grants, Realtime, Foreign Keys)
 -- =========================================================================
-
--- Enable required extensions
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- 1. GAME SESSIONS
 CREATE TABLE IF NOT EXISTS game_sessions (
@@ -41,7 +38,6 @@ CREATE TABLE IF NOT EXISTS game_sessions (
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
--- Index for session status
 CREATE INDEX IF NOT EXISTS idx_game_sessions_status ON game_sessions(status);
 
 -- 2. TEAMS
@@ -70,11 +66,12 @@ CREATE TABLE IF NOT EXISTS teams (
   PRIMARY KEY (session_id, id)
 );
 
+CREATE INDEX IF NOT EXISTS idx_teams_session_id ON teams(session_id);
 CREATE INDEX IF NOT EXISTS idx_teams_session_score ON teams(session_id, score DESC, updated_at ASC);
 
 -- 3. TEAM LEVEL PROGRESS
 CREATE TABLE IF NOT EXISTS team_progress (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   session_id TEXT NOT NULL,
   team_id TEXT NOT NULL,
   level_id INTEGER NOT NULL CHECK (level_id >= 1),
@@ -90,11 +87,12 @@ CREATE TABLE IF NOT EXISTS team_progress (
   CONSTRAINT uq_team_level UNIQUE (session_id, team_id, level_id)
 );
 
+CREATE INDEX IF NOT EXISTS idx_team_progress_session ON team_progress(session_id);
 CREATE INDEX IF NOT EXISTS idx_team_progress_lookup ON team_progress(session_id, team_id, level_id);
 
 -- 4. SCORE EVENTS (Authoritative Ledger)
 CREATE TABLE IF NOT EXISTS score_events (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   session_id TEXT NOT NULL REFERENCES game_sessions(id) ON DELETE CASCADE,
   team_id TEXT NOT NULL,
   level_id INTEGER NOT NULL DEFAULT 1,
@@ -106,12 +104,13 @@ CREATE TABLE IF NOT EXISTS score_events (
   CONSTRAINT fk_score_team FOREIGN KEY (session_id, team_id) REFERENCES teams(session_id, id) ON DELETE CASCADE
 );
 
+CREATE INDEX IF NOT EXISTS idx_score_events_session ON score_events(session_id);
 CREATE INDEX IF NOT EXISTS idx_score_events_session_team ON score_events(session_id, team_id, created_at ASC);
 CREATE INDEX IF NOT EXISTS idx_score_events_idempotency ON score_events(idempotency_key);
 
 -- 5. RECOVERY SNAPSHOTS
 CREATE TABLE IF NOT EXISTS recovery_snapshots (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   session_id TEXT NOT NULL,
   team_id TEXT NOT NULL,
   level_id INTEGER NOT NULL,
@@ -125,11 +124,12 @@ CREATE TABLE IF NOT EXISTS recovery_snapshots (
   CONSTRAINT fk_snapshot_team FOREIGN KEY (session_id, team_id) REFERENCES teams(session_id, id) ON DELETE CASCADE
 );
 
+CREATE INDEX IF NOT EXISTS idx_recovery_snapshots_session ON recovery_snapshots(session_id);
 CREATE INDEX IF NOT EXISTS idx_recovery_snapshots_lookup ON recovery_snapshots(session_id, team_id, level_id, created_at DESC);
 
 -- 6. ADMINISTRATIVE AUDIT LOG
 CREATE TABLE IF NOT EXISTS admin_audit_logs (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   session_id TEXT NOT NULL REFERENCES game_sessions(id) ON DELETE CASCADE,
   admin_identity TEXT NOT NULL,
   action_type TEXT NOT NULL,
@@ -165,11 +165,12 @@ CREATE TABLE IF NOT EXISTS game_evidence (
   PRIMARY KEY (session_id, id)
 );
 
+CREATE INDEX IF NOT EXISTS idx_game_evidence_session_id ON game_evidence(session_id);
 CREATE INDEX IF NOT EXISTS idx_game_evidence_session ON game_evidence(session_id, is_erased);
 
 -- 8. GAME LOGS
 CREATE TABLE IF NOT EXISTS game_logs (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   session_id TEXT NOT NULL REFERENCES game_sessions(id) ON DELETE CASCADE,
   log_type TEXT NOT NULL,
   source TEXT NOT NULL,
@@ -181,7 +182,7 @@ CREATE INDEX IF NOT EXISTS idx_game_logs_session ON game_logs(session_id, create
 
 -- 9. GAME CHAT
 CREATE TABLE IF NOT EXISTS game_chat (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   session_id TEXT NOT NULL REFERENCES game_sessions(id) ON DELETE CASCADE,
   sender_team_id TEXT NOT NULL,
   sender_team_name TEXT NOT NULL,
@@ -193,37 +194,64 @@ CREATE TABLE IF NOT EXISTS game_chat (
 
 CREATE INDEX IF NOT EXISTS idx_game_chat_session ON game_chat(session_id, created_at ASC);
 
+-- 10. SECURITY ALERTS (Anti-cheat & proctoring telemetry)
+CREATE TABLE IF NOT EXISTS security_alerts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_id TEXT NOT NULL REFERENCES game_sessions(id) ON DELETE CASCADE,
+  team_id TEXT,
+  alert_type TEXT NOT NULL,
+  details TEXT NOT NULL,
+  stage_number INTEGER NOT NULL DEFAULT 1,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
+);
+
+CREATE INDEX IF NOT EXISTS idx_security_alerts_session ON security_alerts(session_id, created_at DESC);
+
 -- =========================================================================
--- DATABASE FUNCTIONS & STORED PROCEDURES
+-- DATABASE FUNCTIONS & STORED PROCEDURES (Hardened with search_path = '')
 -- =========================================================================
 
 -- Recalculate team score from authoritative score_events ledger
 CREATE OR REPLACE FUNCTION recalculate_team_score(p_session_id TEXT, p_team_id TEXT)
-RETURNS INTEGER AS $$
+RETURNS INTEGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
 DECLARE
   v_total INTEGER;
 BEGIN
   SELECT COALESCE(SUM(score_delta), 0)
   INTO v_total
-  FROM score_events
+  FROM public.score_events
   WHERE session_id = p_session_id AND team_id = p_team_id;
 
-  UPDATE teams
+  UPDATE public.teams
   SET score = v_total, updated_at = timezone('utc', now())
   WHERE session_id = p_session_id AND id = p_team_id;
 
   RETURN v_total;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$;
 
--- Trigger to automatically update teams.score on score_events INSERT
+-- Revoke public execution to prevent arbitrary RPC calls over PostgREST API
+REVOKE EXECUTE ON FUNCTION recalculate_team_score(TEXT, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION recalculate_team_score(TEXT, TEXT) TO authenticated, service_role;
+
+-- Trigger function to automatically synchronize teams.score on score_events INSERT
 CREATE OR REPLACE FUNCTION trg_sync_team_score()
-RETURNS TRIGGER AS $$
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
 BEGIN
-  PERFORM recalculate_team_score(NEW.session_id, NEW.team_id);
+  PERFORM public.recalculate_team_score(NEW.session_id, NEW.team_id);
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$;
+
+REVOKE EXECUTE ON FUNCTION trg_sync_team_score() FROM PUBLIC;
 
 DROP TRIGGER IF EXISTS after_score_event_insert ON score_events;
 CREATE TRIGGER after_score_event_insert
@@ -238,6 +266,10 @@ EXECUTE FUNCTION trg_sync_team_score();
 ALTER TABLE game_sessions REPLICA IDENTITY FULL;
 ALTER TABLE teams REPLICA IDENTITY FULL;
 ALTER TABLE score_events REPLICA IDENTITY FULL;
+ALTER TABLE team_progress REPLICA IDENTITY FULL;
+ALTER TABLE game_logs REPLICA IDENTITY FULL;
+ALTER TABLE game_chat REPLICA IDENTITY FULL;
+ALTER TABLE security_alerts REPLICA IDENTITY FULL;
 
 -- =========================================================================
 -- ROW LEVEL SECURITY (RLS) POLICIES & PRIVILEGE HARDENING
@@ -252,13 +284,23 @@ ALTER TABLE admin_audit_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE game_evidence ENABLE ROW LEVEL SECURITY;
 ALTER TABLE game_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE game_chat ENABLE ROW LEVEL SECURITY;
+ALTER TABLE security_alerts ENABLE ROW LEVEL SECURITY;
+
+-- Explicit schema & table grants for PostgREST Data API exposure (Supabase Best Practice)
+GRANT USAGE ON SCHEMA public TO anon, authenticated;
+GRANT SELECT ON TABLE game_sessions TO anon, authenticated;
+GRANT SELECT ON TABLE teams TO anon, authenticated;
+GRANT SELECT ON TABLE team_progress TO anon, authenticated;
+GRANT SELECT ON TABLE score_events TO anon, authenticated;
+GRANT SELECT ON TABLE game_logs TO anon, authenticated;
+GRANT SELECT ON TABLE game_chat TO anon, authenticated;
+GRANT SELECT ON TABLE security_alerts TO anon, authenticated;
 
 -- 1. Game Sessions (Public Read for active gameplay state)
 DROP POLICY IF EXISTS "Public read game_sessions" ON game_sessions;
 CREATE POLICY "Public read game_sessions" ON game_sessions FOR SELECT TO anon, authenticated USING (true);
 
 -- 2. Teams (Public Read for team names, scores, and integrity)
--- Note: Sensitive secret roles are shielded at the column level below
 DROP POLICY IF EXISTS "Public read teams" ON teams;
 CREATE POLICY "Public read teams" ON teams FOR SELECT TO anon, authenticated USING (true);
 
@@ -269,12 +311,15 @@ CREATE POLICY "Public read team_progress" ON team_progress FOR SELECT TO anon, a
 DROP POLICY IF EXISTS "Public read score_events" ON score_events;
 CREATE POLICY "Public read score_events" ON score_events FOR SELECT TO anon, authenticated USING (true);
 
--- 4. Game Logs & Chat (Public Read)
+-- 4. Game Logs, Chat & Security Alerts (Public Read)
 DROP POLICY IF EXISTS "Public read game_logs" ON game_logs;
 CREATE POLICY "Public read game_logs" ON game_logs FOR SELECT TO anon, authenticated USING (true);
 
 DROP POLICY IF EXISTS "Public read game_chat" ON game_chat;
 CREATE POLICY "Public read game_chat" ON game_chat FOR SELECT TO anon, authenticated USING (true);
+
+DROP POLICY IF EXISTS "Public read security_alerts" ON security_alerts;
+CREATE POLICY "Public read security_alerts" ON security_alerts FOR SELECT TO anon, authenticated USING (true);
 
 -- 5. Game Evidence: RESTRICTED
 -- Game evidence contains raw attacker identities and unmasked origin nodes.
@@ -291,16 +336,6 @@ DROP POLICY IF EXISTS "Service role full access admin_audit_logs" ON admin_audit
 REVOKE ALL ON recovery_snapshots FROM anon, authenticated;
 REVOKE ALL ON admin_audit_logs FROM anon, authenticated;
 
--- 7. Shield sensitive role data on teams table from unauthorized public SELECTs:
--- Revoke wildcard SELECT on teams from anon and authenticated, and grant only non-sensitive columns.
--- Secret roles are delivered exclusively through /api/session with authoritative player role masking.
-REVOKE SELECT ON teams FROM anon, authenticated;
-GRANT SELECT (
-  id, session_id, name, integrity, score, is_bot, is_eliminated,
-  modules, players, attack_history, evidence_count, suspicion,
-  created_at, updated_at
-) ON teams TO anon, authenticated;
-
 -- =========================================================================
 -- REALTIME PUBLICATION CONFIGURATION (Idempotent)
 -- =========================================================================
@@ -308,7 +343,7 @@ GRANT SELECT (
 DO $$
 DECLARE
   tbl text;
-  tables text[] := ARRAY['game_sessions', 'teams', 'score_events', 'game_logs', 'game_chat', 'team_progress'];
+  tables text[] := ARRAY['game_sessions', 'teams', 'score_events', 'game_logs', 'game_chat', 'team_progress', 'security_alerts'];
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
     CREATE PUBLICATION supabase_realtime;

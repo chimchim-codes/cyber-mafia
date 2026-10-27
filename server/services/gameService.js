@@ -14,6 +14,13 @@ const DEFAULT_SQUAD_NAMES = [
   'Firewall Elite', 'Black Ice', 'Shadow Nexus'
 ];
 
+const CASE_SUSPECTS = [
+  { id: 'S01', name: 'Dr. Mira Sen', role: 'CIVILIAN', suspicion: 'HIGH' },
+  { id: 'S02', name: 'Noah Mercer', role: 'CIVILIAN', suspicion: 'HIGH' },
+  { id: 'S03', name: 'Felix Grant', role: 'CIVILIAN', suspicion: 'CRITICAL' },
+  { id: 'S04', name: 'Elena Ward', role: 'HACKER', suspicion: 'MEDIUM' }
+];
+
 class GameService {
   constructor() {
     this.supabase = getServiceClient();
@@ -157,7 +164,7 @@ class GameService {
     const supabase = getServiceClient();
     const session = await this.getOrCreateSession(sessionId);
 
-    const { data: team } = await supabase
+    let { data: team } = await supabase
       .from('teams')
       .select('*')
       .eq('session_id', sessionId)
@@ -165,7 +172,32 @@ class GameService {
       .single();
 
     if (!team) {
-      throw new Error(`Team ${teamId} not found in session ${sessionId}`);
+      const suspect = CASE_SUSPECTS.find(s => s.id === teamId);
+      const newTeam = {
+        id: teamId,
+        session_id: sessionId,
+        name: suspect ? suspect.name : `Squad ${teamId}`,
+        role: suspect ? suspect.role : 'CIVILIAN',
+        secret_revealed: false,
+        integrity: 100,
+        score: 0,
+        is_bot: false,
+        is_eliminated: false,
+        modules: {
+          dashboard: 'ACTIVE',
+          investigation: 'ACTIVE',
+          evidenceVault: 'ACTIVE',
+          networkMonitor: 'ACTIVE'
+        },
+        players: [],
+        attack_history: [],
+        evidence_count: 0,
+        suspicion: suspect ? suspect.suspicion : 'LOW',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+      await supabase.from('teams').upsert(newTeam);
+      team = newTeam;
     }
 
     const players = Array.isArray(team.players) ? [...team.players] : [];

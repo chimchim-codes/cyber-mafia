@@ -19,6 +19,7 @@ class InMemoryStore {
     this.game_evidence = new Map();
     this.game_logs = new Map();
     this.game_chat = new Map();
+    this.security_alerts = new Map();
   }
 
   getTable(name) {

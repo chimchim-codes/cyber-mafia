@@ -220,8 +220,13 @@ module.exports = async function handler(req, res) {
         return res.status(400).json({ success: false, message: 'Challenge not found' });
       }
 
-      const isCorrect = (answer || '').trim().toLowerCase() === (chal.expected || '').trim().toLowerCase();
-      if (!isCorrect) {
+      const cleanAnswer = (answer || '').trim().toLowerCase();
+      const isExpected = cleanAnswer === (chal.expected || '').trim().toLowerCase();
+      const isAlternative = chal.acceptedAlternatives?.some(
+        alt => (alt || '').trim().toLowerCase() === cleanAnswer
+      );
+
+      if (!isExpected && !isAlternative) {
         return res.status(200).json({ success: false, message: 'Incorrect solution. Inspect the clue and try again.' });
       }
 
@@ -232,7 +237,7 @@ module.exports = async function handler(req, res) {
         eventType: 'SOLVE_INVESTIGATION_CTF',
         scoreDelta: chal.rewardScore || 75,
         idempotencyKey: `ctf_${sessionId}_${teamId}_${challengeId}`,
-        metadata: { challengeId, category: chal.category }
+        metadata: { challengeId, concept: chal.concept }
       });
 
       if (scoreResult.duplicate) {
@@ -243,9 +248,111 @@ module.exports = async function handler(req, res) {
 
       return res.status(200).json({
         success: true,
-        message: `Challenge Solved! +${chal.rewardScore} Points. Forensic Clue: "${chal.evidenceClue}"`,
-        clue: chal.evidenceClue
+        message: `Challenge Solved! +${chal.rewardScore} Points. ${chal.unlockSummary || 'Evidence Unlocked.'}`,
+        clue: chal.unlockSummary
       });
+    }
+
+    // Gameplay: High Tribunal MCQ Accusation
+    if (action === 'SUBMIT_MCQ_ACCUSATION') {
+      const { answers } = payload || {};
+      if (!answers) {
+        return res.status(400).json({ success: false, message: 'Missing indictment answers' });
+      }
+
+      const isQ1 = answers.q1 === 'D'; // Elena Ward
+      const isQ2 = answers.q2 === 'A'; // Poison administered through drink
+      const isQ3 = answers.q3 === 'B'; // Prevent exposing unauthorized exports
+      const isQ4 = answers.q4 === 'D'; // No accomplice
+      const isQ5 = Array.isArray(answers.q5) && ['A', 'B', 'C', 'D'].every(o => answers.q5.includes(o)) && answers.q5.length === 4;
+
+      const correctCount = (isQ1 ? 1 : 0) + (isQ2 ? 1 : 0) + (isQ3 ? 1 : 0) + (isQ4 ? 1 : 0) + (isQ5 ? 1 : 0);
+      const isSolved = correctCount === 5;
+
+      if (isSolved) {
+        if (teamId) {
+          await gameService.recordScoreEvent({
+            sessionId,
+            teamId,
+            levelId: session.current_round || 1,
+            eventType: 'CORRECT_HACKER_ACCUSATION',
+            scoreDelta: session.scoring_rules?.CORRECT_HACKER_ACCUSATION || 300,
+            idempotencyKey: `mcq_verdict_${sessionId}_${teamId}`,
+            metadata: { score: correctCount, isSolved: true }
+          });
+        }
+
+        // Reveal Elena Ward (S04)
+        await supabase.from('teams').update({ secret_revealed: true }).eq('session_id', sessionId).eq('id', 'S04');
+
+        await supabase.from('game_sessions').update({
+          status: 'COMPLETED',
+          current_phase: 'REVEAL_PHASE',
+          reveal_result: {
+            isGuilty: true,
+            killerId: 'S04',
+            killerName: 'Elena Ward',
+            motive: 'Unauthorized model exports concealment',
+            method: 'Organophosphate neurotoxin in drink',
+            score: correctCount,
+            total: 5,
+            timestamp: new Date().toISOString()
+          }
+        }).eq('id', sessionId);
+
+        await gameService.logSystem(sessionId, 'TRIBUNAL_CONVICTION', 'TRIBUNAL', `High Tribunal Verdict: Elena Ward convicted! Case Solved (${correctCount}/5).`);
+
+        return res.status(200).json({
+          success: true,
+          isSolved: true,
+          score: correctCount,
+          message: 'Case Solved! Elena Ward convicted. +300 PTS awarded.'
+        });
+      } else {
+        if (teamId) {
+          await gameService.recordScoreEvent({
+            sessionId,
+            teamId,
+            levelId: session.current_round || 1,
+            eventType: 'FALSE_ACCUSATION_PENALTY',
+            scoreDelta: session.scoring_rules?.FALSE_ACCUSATION_PENALTY || -100,
+            idempotencyKey: `mcq_penalty_${sessionId}_${teamId}_${Date.now()}`,
+            metadata: { score: correctCount, isSolved: false }
+          });
+        }
+
+        await gameService.logSystem(sessionId, 'TRIBUNAL_ACQUITTAL', 'TRIBUNAL', `Accusation failed (${correctCount}/5). Penalty assessed.`);
+
+        return res.status(200).json({
+          success: false,
+          isSolved: false,
+          score: correctCount,
+          message: `Accusation rejected: ${correctCount}/5 correct. Penalized -100 PTS.`
+        });
+      }
+    }
+
+    // Anti-Cheat / Proctoring Security Alert Event
+    if (action === 'SECURITY_ALERT') {
+      const { type, details, stage } = payload || {};
+      const alertRecord = {
+        session_id: sessionId,
+        team_id: teamId || null,
+        alert_type: type || 'PROCTORING_ALERT',
+        details: details || 'Proctoring violation event',
+        stage_number: stage || 1,
+        created_at: new Date().toISOString()
+      };
+
+      await supabase.from('security_alerts').insert(alertRecord);
+      await gameService.logSystem(
+        sessionId,
+        'SECURITY_ALERT',
+        teamId ? `TEAM-${teamId}` : 'AGENT',
+        `[${type || 'PROCTORING'}] Stage ${stage || 1}: ${details || 'Anti-cheat violation detected'}`
+      );
+
+      return res.status(200).json({ success: true, message: 'Security alert recorded' });
     }
 
     // Gameplay: Submit Accusation
