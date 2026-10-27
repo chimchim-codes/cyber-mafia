@@ -194,7 +194,16 @@ export default function App() {
       });
       if (res.ok) {
         const state = await res.json();
-        setGameState(state);
+        setGameState(prev => {
+          if (prev?.phase === 'CIVILIAN_PHASE' && state?.phase === 'LOBBY') {
+            return {
+              ...state,
+              phase: 'CIVILIAN_PHASE',
+              status: 'RUNNING'
+            };
+          }
+          return state;
+        });
         if (state.myTeam) {
           setMyTeam(state.myTeam);
         }
@@ -223,7 +232,16 @@ export default function App() {
       .then(res => res.json())
       .then(data => {
         if (data.state) {
-          setGameState(data.state);
+          setGameState(prev => {
+            if (prev?.phase === 'CIVILIAN_PHASE' && data.state?.phase === 'LOBBY') {
+              return {
+                ...data.state,
+                phase: 'CIVILIAN_PHASE',
+                status: 'RUNNING'
+              };
+            }
+            return data.state;
+          });
           if (data.state.myTeam) setMyTeam(data.state.myTeam);
           showToast(`Reconnected to Squad ${savedTeamId}`, 'SUCCESS');
         }
@@ -624,9 +642,19 @@ export default function App() {
           playerName
         })
       });
-      const data = await res.json();
       if (data.team) setMyTeam(prev => ({ ...prev, ...data.team, systemNo: finalSystemNo, name: finalTeamName }));
-      if (data.state) setGameState(data.state);
+      if (data.state) {
+        setGameState(prev => {
+          if (prev?.phase === 'CIVILIAN_PHASE' && data.state?.phase === 'LOBBY') {
+            return {
+              ...data.state,
+              phase: 'CIVILIAN_PHASE',
+              status: 'RUNNING'
+            };
+          }
+          return data.state;
+        });
+      }
     } catch (e) {
       if (socket && socket.connected) {
         socket.emit('join_lobby', { playerName, teamId, systemNo: finalSystemNo, teamName: finalTeamName, isAdmin });
