@@ -1,0 +1,46 @@
+{
+  "name": "supporthub-ai-customer-support",
+  "version": "1.0.0",
+  "description": "Full-Stack Real-Time Customer Support Chatbot with AI Assistance, Human Agent Escalation, and Live Analytics",
+  "main": "server/server.js",
+  "workspaces": [
+    "client"
+  ],
+  "scripts": {
+    "start": "node server/server.js",
+    "server": "node server/server.js",
+    "dev": "node server/server.js",
+    "client": "npm --prefix client run dev",
+    "build": "npm --prefix client run build && rm -rf dist && cp -r client/dist dist",
+    "test": "node --test tests/aiService.test.js tests/auth.test.js",
+    "test:all": "node --test tests/*.test.js"
+  },
+  "keywords": [
+    "customer-support",
+    "ai-chatbot",
+    "openai",
+    "socketio",
+    "real-time",
+    "mongodb",
+    "mongoose",
+    "react",
+    "vite",
+    "tailwindcss"
+  ],
+  "author": "Sharon Elsa Sam",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.118.0",
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.5",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
+    "mongodb-memory-server": "^11.3.0",
+    "mongoose": "^9.11.4",
+    "openai": "^7.45.1",
+    "socket.io": "^4.8.4",
+    "uuid": "^14.0.2"
+  }
+}
