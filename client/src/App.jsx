@@ -18,7 +18,8 @@ import AdminPanel from './components/AdminPanel';
 
 import { toggleSound, playClick, playSuccess, playError, playAlarm } from './utils/soundEffects';
 
-const socket = io(window.location.origin, {
+const SERVER_URL = import.meta.env.VITE_SERVER_URL || window.location.origin;
+const socket = io(SERVER_URL, {
   transports: ['websocket', 'polling']
 });
 

@@ -3,10 +3,13 @@
   "version": "1.0.0",
   "description": "Multiplayer Cyber Infiltration & Social Deduction Game combining Mafia mechanics with real CTF challenges",
   "main": "server/server.js",
+  "workspaces": [
+    "client"
+  ],
   "scripts": {
     "start": "node server/server.js",
     "server": "node server/server.js",
-    "build": "npm --prefix client run build",
+    "build": "npm --prefix client install && npm --prefix client run build && rm -rf dist && cp -r client/dist dist",
     "client": "npm --prefix client run dev"
   },
   "keywords": [
