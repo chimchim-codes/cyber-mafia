@@ -19,11 +19,17 @@ export default function AdminPanel({
   isAdmin = false,
   onAdminLogin,
   onAdminLogout,
-  authError = null
+  authError = null,
+  securityAlerts = [],
+  onClearSecurityAlerts
 }) {
   const [adminKeyInput, setAdminKeyInput] = useState(adminKey || '');
   const [isVerifying, setIsVerifying] = useState(false);
   const [localAuthError, setLocalAuthError] = useState(authError);
+
+  const allAlerts = securityAlerts?.length > 0 
+    ? securityAlerts 
+    : (gameState?.securityAlerts || []);
 
   const [injectTargetId, setInjectTargetId] = useState('C02');
   const [selectedRecoveryTeam, setSelectedRecoveryTeam] = useState('C01');
@@ -343,17 +349,31 @@ export default function AdminPanel({
             </div>
           </div>
 
-          {/* Export CSV Button (Phase 7) */}
-          {isAdmin && (
-            <button
-              onClick={handleExportCsv}
-              className="px-3.5 py-2 bg-gradient-to-r from-emerald-700 to-green-600 hover:from-emerald-600 hover:to-green-500 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 shadow-lg shadow-emerald-950 cursor-pointer"
-              title="Download authoritative leaderboard as CSV"
-            >
-              <FileSpreadsheet className="w-4 h-4" />
-              Export Final CSV
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {allAlerts.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setActiveTab('SECURITY')}
+                className="px-3 py-1.5 bg-rose-950 border-2 border-rose-500 rounded-xl text-rose-300 font-bold text-xs flex items-center gap-1.5 cursor-pointer animate-pulse shadow-lg shadow-rose-950"
+                title="View security violations"
+              >
+                <ShieldAlert className="w-4 h-4 text-rose-400" />
+                <span>{allAlerts.length} BREACH{allAlerts.length > 1 ? 'ES' : ''} DETECTED</span>
+              </button>
+            )}
+
+            {/* Export CSV Button (Phase 7) */}
+            {isAdmin && (
+              <button
+                onClick={handleExportCsv}
+                className="px-3.5 py-2 bg-gradient-to-r from-emerald-700 to-green-600 hover:from-emerald-600 hover:to-green-500 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 shadow-lg shadow-emerald-950 cursor-pointer"
+                title="Download authoritative leaderboard as CSV"
+              >
+                <FileSpreadsheet className="w-4 h-4" />
+                Export Final CSV
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Authentication Status & Key Login Bar */}
@@ -446,9 +466,14 @@ export default function AdminPanel({
         ) : (
           <>
             {/* Tab Navigation */}
-            <div className="flex gap-2 border-b border-slate-800 pb-2 text-xs">
+            <div className="flex gap-2 border-b border-slate-800 pb-2 text-xs flex-wrap">
               {[
                 { id: 'LIFECYCLE', label: 'Match Lifecycle (Start/Pause/End)' },
+                { 
+                  id: 'SECURITY', 
+                  label: `🚨 Proctoring Alerts (${allAlerts.length})`,
+                  isAlert: allAlerts.length > 0
+                },
                 { id: 'RECOVERY', label: 'Recovery Snapshots & Resets' },
                 { id: 'TEAMS', label: 'Squad Telemetry & Roles' },
                 { id: 'INJECT', label: 'Breach Simulation' }
@@ -456,14 +481,83 @@ export default function AdminPanel({
                 <button
                   key={tab.id}
                   onClick={() => { playClick(); setActiveTab(tab.id); }}
-                  className={`px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer ${
-                    activeTab === tab.id ? 'bg-amber-950/60 border border-amber-500 text-amber-300' : 'text-slate-400 hover:text-white'
+                  className={`px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                    activeTab === tab.id 
+                      ? tab.isAlert ? 'bg-rose-950 border border-rose-500 text-rose-200' : 'bg-amber-950/60 border border-amber-500 text-amber-300' 
+                      : tab.isAlert ? 'text-rose-400 border border-rose-800/60 bg-rose-950/30 hover:bg-rose-950/50' : 'text-slate-400 hover:text-white'
                   }`}
                 >
                   {tab.label}
                 </button>
               ))}
             </div>
+
+            {/* TAB: SECURITY MONITOR (Proctoring & Anti-Cheat) */}
+            {activeTab === 'SECURITY' && (
+              <div className="space-y-4">
+                <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-900 pb-3">
+                    <div className="flex items-center gap-2">
+                      <ShieldAlert className="w-5 h-5 text-rose-500" />
+                      <div>
+                        <h4 className="text-sm font-bold text-slate-100">Proctoring & Security Violations Monitor</h4>
+                        <p className="text-[11px] text-slate-400">
+                          Automated audit log of fullscreen exits, window blurs, and unauthorized navigation attempts.
+                        </p>
+                      </div>
+                    </div>
+                    {allAlerts.length > 0 && (
+                      <button
+                        onClick={() => {
+                          playClick();
+                          if (onClearSecurityAlerts) onClearSecurityAlerts();
+                        }}
+                        className="px-3 py-1.5 bg-rose-950/60 hover:bg-rose-900/60 border border-rose-700 rounded-lg text-rose-300 text-xs cursor-pointer"
+                      >
+                        Clear Alert History
+                      </button>
+                    )}
+                  </div>
+
+                  {allAlerts.length === 0 ? (
+                    <div className="p-6 text-center text-xs text-slate-500 bg-slate-900/40 rounded-xl border border-slate-800/80">
+                      <CheckCircle2 className="w-8 h-8 text-emerald-500 mx-auto mb-2 opacity-80" />
+                      <div className="text-slate-300 font-bold">No security violations recorded</div>
+                      <div className="text-slate-500 mt-1">All investigators are currently operating inside compliant fullscreen environments.</div>
+                    </div>
+                  ) : (
+                    <div className="space-y-2 max-h-[50vh] overflow-y-auto pr-1">
+                      {allAlerts.map((al, idx) => (
+                        <div
+                          key={al.id || idx}
+                          className="p-3 bg-rose-950/30 border border-rose-800/80 rounded-xl flex flex-wrap items-center justify-between gap-3 text-xs"
+                        >
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950 text-rose-300 border border-rose-700">
+                                {al.type}
+                              </span>
+                              <span className="font-bold text-slate-200">
+                                {al.playerName || 'Investigator'}
+                              </span>
+                              <span className="text-[11px] text-slate-400">
+                                ({al.teamId || 'S01'} - {al.teamName || 'Squad'})
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-rose-200/90 leading-tight">
+                              {al.details || al.message}
+                            </p>
+                          </div>
+                          <div className="text-right text-[11px] text-slate-500 font-mono">
+                            {al.timestamp}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* TAB 1: LIFECYCLE (Phase 4) */}
             {activeTab === 'LIFECYCLE' && (

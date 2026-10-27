@@ -19,6 +19,7 @@ export default function CivilianDashboard({
   currentStage = 1,
   completedStages = [],
   unlockedHints = {},
+  elapsedSeconds = 0,
   onSolveChallenge,
   onRequestHint,
   onOpenAccusationModal
@@ -27,6 +28,12 @@ export default function CivilianDashboard({
 
   const visibleEvidence = allEvidence.filter(e => unlockedBatches.includes(e.batch));
   const integrity = myTeam?.integrity || 100;
+
+  const formatMinutesSeconds = (sec) => {
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  };
 
   return (
     <div className="space-y-4">
@@ -48,6 +55,11 @@ export default function CivilianDashboard({
 
         {/* Status Indicators */}
         <div className="flex items-center gap-3 text-xs font-mono">
+          <div className="bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
+            <span className="text-slate-500 block text-[10px]">TIME TAKEN</span>
+            <span className="text-amber-300 font-bold font-mono">{formatMinutesSeconds(elapsedSeconds)}</span>
+          </div>
+
           <div className="bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
             <span className="text-slate-500 block text-[10px]">STAGE PROGRESS</span>
             <span className="text-cyan-400 font-bold">Stage {Math.min(currentStage, 5)} / 5</span>

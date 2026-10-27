@@ -11,8 +11,12 @@ const DEFAULT_SUSPECTS = [
 ];
 
 export default function LandingLobby({ gameState, onJoinTeam, onStartGame, isAdmin }) {
-  const [playerName, setPlayerName] = useState('');
-  const [selectedTeamId, setSelectedTeamId] = useState('S01');
+  const [playerName, setPlayerName] = useState(() => {
+    return localStorage.getItem('cyber_mafia_player_name') || '';
+  });
+  const [selectedTeamId, setSelectedTeamId] = useState(() => {
+    return localStorage.getItem('cyber_mafia_team_id') || 'S01';
+  });
 
   const suspects = (gameState?.teams && gameState.teams.length > 0)
     ? gameState.teams.slice(0, 4)
@@ -22,6 +26,21 @@ export default function LandingLobby({ gameState, onJoinTeam, onStartGame, isAdm
     playClick();
     const finalTeamId = teamId || selectedTeamId || 'S01';
     const finalName = playerName.trim() || 'Investigator_' + Math.floor(Math.random() * 900 + 100);
+
+    // Request Fullscreen immediately upon user click interaction
+    try {
+      const elem = document.documentElement;
+      if (elem.requestFullscreen) {
+        elem.requestFullscreen().catch(() => {});
+      } else if (elem.webkitRequestFullscreen) {
+        elem.webkitRequestFullscreen();
+      } else if (elem.msRequestFullscreen) {
+        elem.msRequestFullscreen();
+      }
+    } catch (e) {
+      console.warn('Fullscreen request failed:', e);
+    }
+
     onJoinTeam(finalName, finalTeamId);
     setTimeout(() => {
       onStartGame();

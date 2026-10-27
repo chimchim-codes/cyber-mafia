@@ -29,11 +29,63 @@ export default function CivilianCTFLab({
 
   const activeChallenge = challenges?.find(c => c.id === selectedChallengeId) || challenges?.[0];
 
-  // Code editor state per challenge
-  const [codeBuffers, setCodeBuffers] = useState({});
-  const [terminalOutputs, setTerminalOutputs] = useState({});
+  // Code editor state per challenge with localStorage persistence
+  const [codeBuffers, setCodeBuffers] = useState(() => {
+    try {
+      const saved = localStorage.getItem('cyber_mafia_code_buffers');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  const [terminalOutputs, setTerminalOutputs] = useState(() => {
+    try {
+      const saved = localStorage.getItem('cyber_mafia_terminal_outputs');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  const [submittedAnswers, setSubmittedAnswers] = useState(() => {
+    try {
+      const saved = localStorage.getItem('cyber_mafia_submitted_answers');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+
   const [answerInput, setAnswerInput] = useState('');
   const [feedback, setFeedback] = useState(null);
+
+  // Sync codeBuffers to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('cyber_mafia_code_buffers', JSON.stringify(codeBuffers));
+    } catch (e) {
+      console.warn('Failed to save code buffers:', e);
+    }
+  }, [codeBuffers]);
+
+  // Sync terminalOutputs to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('cyber_mafia_terminal_outputs', JSON.stringify(terminalOutputs));
+    } catch (e) {
+      console.warn('Failed to save terminal outputs:', e);
+    }
+  }, [terminalOutputs]);
+
+  // Sync submittedAnswers to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('cyber_mafia_submitted_answers', JSON.stringify(submittedAnswers));
+    } catch (e) {
+      console.warn('Failed to save submitted answers:', e);
+    }
+  }, [submittedAnswers]);
 
   const activeCode = codeBuffers[activeChallenge?.id] !== undefined 
     ? codeBuffers[activeChallenge?.id] 
@@ -88,6 +140,7 @@ export default function CivilianCTFLab({
     );
 
     if (isExpected || isAlternative) {
+      setSubmittedAnswers(prev => ({ ...prev, [activeChallenge.id]: cleanAnswer }));
       onSolveChallenge(activeChallenge.id, cleanAnswer, activeChallenge.stageNumber);
       setFeedback({ type: 'SUCCESS', message: `Stage ${activeChallenge.stageNumber} Solved! +${activeChallenge.rewardScore} PTS. Evidence batch unlocked!` });
       setAnswerInput('');
@@ -250,9 +303,16 @@ export default function CivilianCTFLab({
               </div>
 
               {isCompleted ? (
-                <div className="p-3 bg-emerald-950/30 border border-emerald-800 rounded-lg text-xs text-emerald-300 flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                  <span>Stage {activeChallenge.stageNumber} Completed! Solution verified.</span>
+                <div className="p-3 bg-emerald-950/30 border border-emerald-800 rounded-lg text-xs text-emerald-300 space-y-1">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span className="font-bold">Stage {activeChallenge.stageNumber} Completed! Solution verified.</span>
+                  </div>
+                  {submittedAnswers[activeChallenge.id] && (
+                    <div className="text-[11px] text-emerald-300/90 pl-6 font-mono">
+                      Submitted Output: <span className="bg-emerald-900/60 px-1.5 py-0.5 rounded border border-emerald-700/60 font-bold">{submittedAnswers[activeChallenge.id]}</span>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <form onSubmit={handleSubmitSolution} className="space-y-2">

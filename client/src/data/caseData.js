@@ -678,6 +678,24 @@ export function createInitialGameState() {
       SOLVE_PYTHON_CHALLENGE: 100,
       CORRECT_HACKER_ACCUSATION: 500,
       FALSE_ACCUSATION_PENALTY: -50
-    }
+    },
+    securityAlerts: []
   };
+}
+
+export function loadSavedGameState() {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem('cyber_mafia_game_state');
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return {
+      ...createInitialGameState(),
+      ...parsed,
+      challenges: PYTHON_CHALLENGES
+    };
+  } catch (e) {
+    console.warn('Could not parse saved game state:', e);
+    return null;
+  }
 }

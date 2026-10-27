@@ -5,7 +5,7 @@ import { io } from 'socket.io-client';
 import { createClient } from '@supabase/supabase-js';
 import { 
   Shield, Skull, Terminal, Volume2, VolumeX, Settings, 
-  Clock, Award, Trophy, Radio, AlertTriangle, Play, Pause, HelpCircle, X 
+  Clock, Award, Trophy, Radio, AlertTriangle, Play, Pause, HelpCircle, X, Maximize 
 } from 'lucide-react';
 
 import LandingLobby from './components/LandingLobby';
@@ -23,10 +23,18 @@ import {
   INITIAL_SUSPECTS, 
   PYTHON_CHALLENGES, 
   ALL_EVIDENCE_FILES, 
-  createInitialGameState 
+  createInitialGameState,
+  loadSavedGameState
 } from './data/caseData';
 
 import { toggleSound, playClick, playSuccess, playError, playAlarm } from './utils/soundEffects';
+
+// Format seconds into MM:SS
+export const formatMinutesSeconds = (totalSec) => {
+  const m = Math.floor(Math.max(0, totalSec || 0) / 60);
+  const s = Math.max(0, totalSec || 0) % 60;
+  return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+};
 
 // Setup Supabase Client for Public Realtime Subscriptions
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
@@ -52,11 +60,50 @@ const DEFAULT_SESSION_ID = 'default-cyber-session';
 
 export default function App() {
   const [sessionId, setSessionId] = useState(DEFAULT_SESSION_ID);
-  const [gameState, setGameState] = useState(() => createInitialGameState());
-  const [myTeam, setMyTeam] = useState(() => ({
-    ...INITIAL_SUSPECTS[0],
-    visibleEvidence: ALL_EVIDENCE_FILES.filter(e => e.batch === 1)
-  }));
+  
+  // Restore game state from localStorage so reload maintains all progress
+  const [gameState, setGameState] = useState(() => {
+    const saved = loadSavedGameState();
+    return saved || createInitialGameState();
+  });
+
+  // Restore player details & unlocked evidence
+  const [myTeam, setMyTeam] = useState(() => {
+    const savedTeamId = localStorage.getItem('cyber_mafia_team_id') || 'S01';
+    const savedPlayerName = localStorage.getItem('cyber_mafia_player_name') || '';
+    const savedState = loadSavedGameState();
+    const targetSuspect = INITIAL_SUSPECTS.find(s => s.id === savedTeamId) || INITIAL_SUSPECTS[0];
+    const unlockedBatches = savedState?.unlockedEvidenceBatches || [1];
+
+    return {
+      ...targetSuspect,
+      playerName: savedPlayerName || targetSuspect.name,
+      name: savedPlayerName ? `${targetSuspect.name} [${savedPlayerName}]` : targetSuspect.name,
+      score: savedState?.score || 0,
+      visibleEvidence: ALL_EVIDENCE_FILES.filter(e => unlockedBatches.includes(e.batch))
+    };
+  });
+
+  // Track how many minutes/seconds the game has taken so far
+  const [elapsedSeconds, setElapsedSeconds] = useState(() => {
+    const savedStart = localStorage.getItem('cyber_mafia_start_time');
+    if (savedStart) {
+      return Math.max(0, Math.floor((Date.now() - Number(savedStart)) / 1000));
+    }
+    return 0;
+  });
+
+  // Fullscreen lockdown & Anti-cheat security violations
+  const [isFullscreen, setIsFullscreen] = useState(true);
+  const [securityAlerts, setSecurityAlerts] = useState(() => {
+    try {
+      const saved = localStorage.getItem('cyber_mafia_security_alerts');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
   const [adminKey, setAdminKey] = useState(
     () => localStorage.getItem('cyber_mafia_admin_key') || ''
   );
@@ -297,10 +344,166 @@ export default function App() {
     };
   }, []);
 
-  // Client-side timer tick (works standalone or when server is unavailable)
+  // Fullscreen trigger helper
+  const enterFullscreen = () => {
+    try {
+      const elem = document.documentElement;
+      if (elem.requestFullscreen) {
+        elem.requestFullscreen().catch(() => {});
+      } else if (elem.webkitRequestFullscreen) {
+        elem.webkitRequestFullscreen();
+      } else if (elem.msRequestFullscreen) {
+        elem.msRequestFullscreen();
+      }
+    } catch (e) {
+      console.warn('Fullscreen request failed:', e);
+    }
+  };
+
+  // Record security alerts & notify admin console
+  const recordSecurityAlert = (type, details) => {
+    playAlarm();
+    const newAlert = {
+      id: 'SEC-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
+      timestamp: new Date().toLocaleTimeString(),
+      playerName: localStorage.getItem('cyber_mafia_player_name') || myTeam?.playerName || 'Investigator',
+      teamId: myTeam?.id || 'S01',
+      teamName: myTeam?.name || 'Investigator',
+      type,
+      details,
+      severity: 'HIGH'
+    };
+
+    setSecurityAlerts(prev => {
+      const updated = [newAlert, ...prev];
+      try {
+        localStorage.setItem('cyber_mafia_security_alerts', JSON.stringify(updated));
+      } catch (e) {}
+      return updated;
+    });
+
+    setGameState(prev => {
+      const next = {
+        ...prev,
+        securityAlerts: [newAlert, ...(prev?.securityAlerts || [])],
+        systemLogs: [
+          {
+            id: 'LOG-SEC-' + Date.now(),
+            timestamp: new Date().toLocaleTimeString(),
+            type: 'BREACH',
+            source: 'SECURITY_GUARD',
+            message: `PROCTORING BREACH: ${newAlert.playerName} (${newAlert.teamId}) - ${details}`
+          },
+          ...(prev?.systemLogs || [])
+        ]
+      };
+      try {
+        localStorage.setItem('cyber_mafia_game_state', JSON.stringify(next));
+      } catch (e) {}
+      return next;
+    });
+
+    if (socket && socket.connected) {
+      socket.emit('security_alert', newAlert);
+    }
+
+    try {
+      fetch('/api/game-action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'SECURITY_ALERT',
+          sessionId,
+          payload: newAlert
+        })
+      }).catch(() => {});
+    } catch (e) {}
+
+    showToast(`⚠️ PROCTORING ALERT: ${details}`, 'ERROR');
+  };
+
+  // Proctoring & Anti-Cheat Listeners (Fullscreen exit, Tab switch, Window blur, Navigation)
   useEffect(() => {
-    if (gameState?.phase === 'CIVILIAN_PHASE' && gameState.timer > 0 && !gameState.isPaused) {
+    if (gameState?.phase !== 'CIVILIAN_PHASE') return;
+
+    // Check fullscreen state
+    const handleFullscreenChange = () => {
+      const isCurrentlyFs = Boolean(
+        document.fullscreenElement ||
+        document.webkitFullscreenElement ||
+        document.mozFullScreenElement ||
+        document.msFullscreenElement
+      );
+      setIsFullscreen(isCurrentlyFs);
+      if (!isCurrentlyFs) {
+        recordSecurityAlert('FULLSCREEN_EXITED', 'Investigator exited full screen mode.');
+      }
+    };
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+
+    // Tab switch & minimization detection
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        recordSecurityAlert('TAB_SWITCH', 'Investigator switched browser tabs or minimized window.');
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    // Window blur (focus lost to another application)
+    const handleWindowBlur = () => {
+      recordSecurityAlert('WINDOW_BLUR', 'Game window lost focus (switched to another desktop application or monitor).');
+    };
+
+    window.addEventListener('blur', handleWindowBlur);
+
+    // Prevent navigating away or closing window
+    const handleBeforeUnload = (e) => {
+      recordSecurityAlert('NAVIGATION_ATTEMPT', 'Attempted to navigate away or close test window.');
+      e.preventDefault();
+      e.returnValue = 'Match is active. Progress will be saved, but leaving is logged as a violation.';
+      return e.returnValue;
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleWindowBlur);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [gameState?.phase, myTeam?.name]);
+
+  // Save gameState and myTeam continuously so reload maintains all progress
+  useEffect(() => {
+    if (gameState && gameState.phase !== 'LOBBY') {
+      try {
+        localStorage.setItem('cyber_mafia_game_state', JSON.stringify({
+          ...gameState,
+          score: myTeam?.score || 0
+        }));
+      } catch (e) {}
+    }
+  }, [gameState, myTeam?.score]);
+
+  // Client-side timer tick: tracks elapsed duration and countdown timer
+  useEffect(() => {
+    if (gameState?.phase === 'CIVILIAN_PHASE' && !gameState.isPaused) {
       const interval = setInterval(() => {
+        // Update elapsed time (how many minutes/seconds the game took)
+        const savedStart = localStorage.getItem('cyber_mafia_start_time');
+        if (savedStart) {
+          const diff = Math.max(0, Math.floor((Date.now() - Number(savedStart)) / 1000));
+          setElapsedSeconds(diff);
+        } else {
+          setElapsedSeconds(prev => prev + 1);
+        }
+
+        // Update countdown timer if active
         setGameState(prev => {
           if (!prev) return prev;
           if (prev.timer <= 1) {
@@ -311,7 +514,7 @@ export default function App() {
       }, 1000);
       return () => clearInterval(interval);
     }
-  }, [gameState?.phase, gameState?.timer, gameState?.isPaused]);
+  }, [gameState?.phase, gameState?.isPaused]);
 
   // Handler: Join Team (Works standalone and syncs over API/socket)
   const handleJoinTeam = async (playerName, teamId) => {
@@ -349,16 +552,31 @@ export default function App() {
 
   // Handler: Start Game (Supports standalone, socket, and authoritative API)
   const handleStartGame = async () => {
-    startTimeRef.current = new Date();
+    let startTs = localStorage.getItem('cyber_mafia_start_time');
+    if (!startTs) {
+      startTs = String(Date.now());
+      localStorage.setItem('cyber_mafia_start_time', startTs);
+    }
+    startTimeRef.current = new Date(Number(startTs));
+    setElapsedSeconds(Math.max(0, Math.floor((Date.now() - Number(startTs)) / 1000)));
     playClick();
 
+    // Enforce Fullscreen mode on start
+    enterFullscreen();
+
     // In local standalone mode, immediately start investigation
-    setGameState(prev => ({
-      ...prev,
-      phase: 'CIVILIAN_PHASE',
-      status: 'RUNNING',
-      timer: prev?.timer > 0 ? prev.timer : 180
-    }));
+    setGameState(prev => {
+      const next = {
+        ...prev,
+        phase: 'CIVILIAN_PHASE',
+        status: 'RUNNING',
+        timer: prev?.timer > 0 ? prev.timer : 240
+      };
+      try {
+        localStorage.setItem('cyber_mafia_game_state', JSON.stringify(next));
+      } catch (e) {}
+      return next;
+    });
 
     if (socket && socket.connected) {
       socket.emit('start_game');
@@ -825,6 +1043,11 @@ export default function App() {
             onAdminLogin={handleAdminLogin}
             onAdminLogout={handleAdminLogout}
             authError={authError}
+            securityAlerts={securityAlerts}
+            onClearSecurityAlerts={() => {
+              setSecurityAlerts([]);
+              localStorage.removeItem('cyber_mafia_security_alerts');
+            }}
             onAdminAction={() => {
               if (socket && socket.connected) {
                 socket.emit('admin_action', { action: 'REFRESH' });
@@ -900,13 +1123,24 @@ export default function App() {
             </div>
           )}
 
-          {/* Phase Countdown Gauge */}
-          <div className="flex items-center gap-2 bg-slate-950 px-4 py-1.5 rounded-xl border border-slate-800">
+          {/* Active Gameplay Time Taken (Elapsed) */}
+          <div className="flex items-center gap-2.5 bg-slate-950 px-3.5 py-1.5 rounded-xl border border-slate-800 shadow-inner" title="Elapsed match duration">
             <Clock className={`w-4 h-4 ${gameState.isPaused ? 'text-slate-500' : 'text-amber-400 animate-pulse'}`} />
-            <span className="text-sm font-bold text-slate-100 font-mono">
-              00:{gameState.timer < 10 ? '0' + gameState.timer : gameState.timer}
-            </span>
+            <div className="flex flex-col text-left">
+              <span className="text-[9px] text-slate-500 font-bold tracking-wider leading-none">TIME TAKEN</span>
+              <span className="text-sm font-black text-slate-100 font-mono">
+                {formatMinutesSeconds(elapsedSeconds)}
+              </span>
+            </div>
           </div>
+
+          {/* Phase Countdown Gauge (if remaining timer exists) */}
+          {gameState?.timer > 0 && (
+            <div className="hidden sm:flex items-center gap-1.5 bg-slate-950/80 px-2.5 py-1.5 rounded-xl border border-slate-800 text-xs">
+              <span className="text-slate-500 text-[10px]">REMAINING:</span>
+              <span className="font-mono text-cyan-300 font-bold">{formatMinutesSeconds(gameState.timer)}</span>
+            </div>
+          )}
 
           {/* Leaderboard Button */}
           <button
@@ -972,6 +1206,7 @@ export default function App() {
           <CivilianDashboard
             gameState={gameState}
             myTeam={myTeam}
+            elapsedSeconds={elapsedSeconds}
             allEvidence={ALL_EVIDENCE_FILES}
             unlockedBatches={gameState?.unlockedEvidenceBatches || [1]}
             currentStage={gameState?.currentStage || 1}
@@ -1033,6 +1268,13 @@ export default function App() {
           onAdminLogin={handleAdminLogin}
           onAdminLogout={handleAdminLogout}
           authError={authError}
+          securityAlerts={securityAlerts}
+          onClearSecurityAlerts={() => {
+            setSecurityAlerts([]);
+            try {
+              localStorage.removeItem('cyber_mafia_security_alerts');
+            } catch (e) {}
+          }}
           onAdminAction={() => {
             if (socket && socket.connected) {
               socket.emit('admin_action', { action: 'REFRESH' });
@@ -1066,6 +1308,36 @@ export default function App() {
         onSendMessage={handleSendMessage}
         visibleEvidence={myTeam?.visibleEvidence || []}
       />
+
+      {/* Anti-Cheat Fullscreen Enforcement Modal */}
+      {gameState?.phase === 'CIVILIAN_PHASE' && !isFullscreen && (
+        <div className="fixed inset-0 z-[9999] bg-black/95 backdrop-blur-xl flex flex-col items-center justify-center p-6 text-center font-mono">
+          <div className="max-w-md w-full bg-slate-900 border-2 border-rose-500 rounded-2xl p-6 shadow-2xl space-y-4">
+            <div className="w-16 h-16 rounded-2xl bg-rose-950 border-2 border-rose-500 flex items-center justify-center text-rose-400 mx-auto animate-bounce">
+              <AlertTriangle className="w-8 h-8" />
+            </div>
+            <div>
+              <span className="text-[10px] text-rose-400 uppercase tracking-widest font-bold">
+                init Association // Proctoring Lockdown
+              </span>
+              <h2 className="text-xl font-black text-white mt-1">FULLSCREEN REQUIRED</h2>
+            </div>
+            <p className="text-xs text-slate-300 leading-relaxed">
+              FALSE TRIALS security enforcement active. You cannot exit fullscreen, switch tabs, or navigate away during investigation.
+            </p>
+            <div className="p-3 bg-rose-950/40 border border-rose-800/80 rounded-xl text-[11px] text-rose-300 font-mono">
+              ⚠️ Breach event logged to High Tribunal Admin Console.
+            </div>
+            <button
+              onClick={enterFullscreen}
+              className="w-full py-3 bg-gradient-to-r from-rose-600 via-red-600 to-rose-600 hover:from-rose-500 hover:to-red-500 text-white font-bold rounded-xl text-xs uppercase tracking-wider shadow-lg shadow-rose-950 flex items-center justify-center gap-2 cursor-pointer transition-all"
+            >
+              <Maximize className="w-4 h-4" />
+              Re-Enter Fullscreen Mode
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

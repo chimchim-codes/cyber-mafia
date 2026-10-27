@@ -329,15 +329,16 @@ class GameEngine extends EventEmitter {
 
       this.logSystem('FORENSIC_SOLVE', team.id, `Solved [${chal.title}]. Clue unlocked.`);
 
+      const clueText = chal.evidenceClue || chal.unlockSummary || 'Evidence batch unlocked';
       this.evidenceManager.evidenceList.forEach(ev => {
-        this.evidenceManager.enhanceEvidence(ev.id, team.id, chal.evidenceClue);
+        this.evidenceManager.enhanceEvidence(ev.id, team.id, clueText);
       });
 
       this.emitStateUpdate();
       return {
         success: true,
-        message: `Challenge Solved! +${chal.rewardScore} PTS. Clue unlocked: "${chal.evidenceClue}"`,
-        clue: chal.evidenceClue
+        message: `Challenge Solved! +${chal.rewardScore} PTS. Clue unlocked: "${clueText}"`,
+        clue: clueText
       };
     } else {
       return { success: false, message: 'Incorrect answer. Check the prompt or request a hint.' };
