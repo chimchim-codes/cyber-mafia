@@ -1260,7 +1260,11 @@ class GameService {
       activeAccusation: session.active_accusation,
       defenseStatement: session.defense_statement,
       revealResult: session.reveal_result,
-      scoringRules: session.scoring_rules
+      scoringRules: session.scoring_rules,
+      challenges: generateCivilianLabChallenges(),
+      currentStage: Math.min((myTeam?.completed_stages || 0) + 1, 5),
+      completedStages: Array.from({ length: myTeam?.completed_stages || 0 }, (_, i) => i + 1),
+      unlockedEvidenceBatches: Array.from({ length: Math.min((myTeam?.completed_stages || 0) + 1, 6) }, (_, i) => i + 1)
     };
   }
 }

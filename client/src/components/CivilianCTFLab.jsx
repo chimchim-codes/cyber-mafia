@@ -4,17 +4,22 @@ import {
   Terminal, Lock, CheckCircle2, Play, RotateCcw, 
   HelpCircle, ArrowRight, ShieldAlert, Cpu, Sparkles, Check, AlertCircle
 } from 'lucide-react';
-import { playClick, playSuccess, playError } from '../utils/soundEffects';
+import { playClick, playSuccess, playError, initAudio } from '../utils/soundEffects';
 import { executePythonCode } from '../utils/pythonRunner';
+import { PYTHON_CHALLENGES } from '../data/caseData';
 
 export default function CivilianCTFLab({
-  challenges,
+  challenges: propChallenges,
   currentStage = 1,
   completedStages = [],
   onSolveChallenge,
   onRequestHint,
   unlockedHints = {}
 }) {
+  const challenges = (propChallenges && Array.isArray(propChallenges) && propChallenges.length > 0)
+    ? propChallenges
+    : PYTHON_CHALLENGES;
+
   const [selectedChallengeId, setSelectedChallengeId] = useState(
     challenges?.[currentStage - 1]?.id || challenges?.[0]?.id || 'CHAL-PY-1'
   );
@@ -27,7 +32,7 @@ export default function CivilianCTFLab({
     }
   }, [currentStage, challenges]);
 
-  const activeChallenge = challenges?.find(c => c.id === selectedChallengeId) || challenges?.[0];
+  const activeChallenge = challenges?.find(c => c.id === selectedChallengeId) || challenges?.[0] || PYTHON_CHALLENGES[0];
 
   // Code editor state per challenge with localStorage persistence and cache versioning
   const [codeBuffers, setCodeBuffers] = useState(() => {
@@ -117,6 +122,7 @@ export default function CivilianCTFLab({
   };
 
   const handleRunCode = () => {
+    initAudio();
     playClick();
     if (!activeChallenge || isRunning) return;
     setIsRunning(true);

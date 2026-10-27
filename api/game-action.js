@@ -21,11 +21,61 @@ module.exports = async function handler(req, res) {
     return res.status(405).json({ success: false, message: 'Method Not Allowed' });
   }
 
-  const { action, sessionId = 'default-cyber-session', teamId, payload = {} } = req.body || {};
+  let body = req.body;
+  if (typeof body === 'string') {
+    try {
+      body = JSON.parse(body);
+    } catch (_) {}
+  }
+
+  const { action, sessionId = 'default-cyber-session', teamId, payload = {} } = body || {};
   const supabase = getServiceClient();
 
   try {
-    const session = await gameService.getOrCreateSession(sessionId);
+    // Fast Path Actions (Log events immediately without waiting for session locks/upserts)
+    if (action === 'SECURITY_ALERT') {
+      const { type, details, playerName, systemNo, teamId: alertTeamId, teamName, stage } = payload || {};
+      const targetTeam = teamId || alertTeamId || 'SECURITY';
+      try {
+        await supabase.from('security_alerts').insert({
+          session_id: sessionId,
+          team_id: targetTeam !== 'SECURITY' ? targetTeam : null,
+          alert_type: type || 'PROCTORING_ALERT',
+          details: details || 'Proctoring violation event',
+          stage_number: stage || 1,
+          created_at: new Date().toISOString()
+        });
+      } catch (_) {}
+      const formattedMsg = `[PROCTORING BREACH] ${type || 'VIOLATION'} by ${playerName || 'Unknown'} (System: ${systemNo || 'N/A'}, Squad: ${teamName || alertTeamId || 'N/A'}): ${details}`;
+      await gameService.logSystem(sessionId, 'SECURITY_ALERT', targetTeam, formattedMsg);
+      return res.status(200).json({ success: true, message: 'Security alert logged.' });
+    }
+
+    if (action === 'PLAYER_LOGIN') {
+      const { playerName, systemNo, teamId: loginTeamId, teamName } = payload || {};
+      const formattedMsg = `[LOGIN] Investigator ${playerName || 'Agent'} joined squad ${teamName || loginTeamId} from System Terminal: ${systemNo || 'SYS-DEFAULT'}`;
+      await gameService.logSystem(sessionId, 'PLAYER_LOGIN', loginTeamId || 'SYSTEM', formattedMsg);
+      return res.status(200).json({ success: true, message: 'Login event logged.' });
+    }
+
+    if (action === 'GET_AUDIT_TRAIL') {
+      const { data: logs } = await supabase
+        .from('game_logs')
+        .select('*')
+        .eq('session_id', sessionId)
+        .order('created_at', { ascending: false });
+      return res.status(200).json({ success: true, logs: logs || [] });
+    }
+
+    // Retrieve or initialize session with timeout race
+    const sessionPromise = gameService.getOrCreateSession(sessionId);
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Session retrieval timed out')), 6000)
+    );
+    const session = await Promise.race([sessionPromise, timeoutPromise]).catch(async (e) => {
+      console.warn(`[game-action] getOrCreateSession slow (${e.message}), activating memory fallback.`);
+      return await gameService.getOrCreateSession(sessionId);
+    });
 
     // Lifecycle Actions (All administrative lifecycle actions require verified admin authorization)
     if (action === 'START_GAME') {
@@ -177,30 +227,6 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ success: true, message: 'Game session and all scores reset to lobby.' });
     }
 
-    // Proctoring & Audit Actions
-    if (action === 'SECURITY_ALERT') {
-      const { type, details, playerName, systemNo, teamId: alertTeamId, teamName } = payload || {};
-      const formattedMsg = `[PROCTORING BREACH] ${type} by ${playerName || 'Unknown'} (System: ${systemNo || 'N/A'}, Squad: ${teamName || alertTeamId || 'N/A'}): ${details}`;
-      await gameService.logSystem(sessionId, 'SECURITY_ALERT', alertTeamId || 'SECURITY', formattedMsg);
-      return res.status(200).json({ success: true, message: 'Security alert logged.' });
-    }
-
-    if (action === 'PLAYER_LOGIN') {
-      const { playerName, systemNo, teamId: loginTeamId, teamName } = payload || {};
-      const formattedMsg = `[LOGIN] Investigator ${playerName || 'Agent'} joined squad ${teamName || loginTeamId} from System Terminal: ${systemNo || 'SYS-DEFAULT'}`;
-      await gameService.logSystem(sessionId, 'PLAYER_LOGIN', loginTeamId || 'SYSTEM', formattedMsg);
-      return res.status(200).json({ success: true, message: 'Login event logged.' });
-    }
-
-    if (action === 'GET_AUDIT_TRAIL') {
-      const { data: logs } = await supabase
-        .from('game_logs')
-        .select('*')
-        .eq('session_id', sessionId)
-        .order('created_at', { ascending: false });
-      return res.status(200).json({ success: true, logs: logs || [] });
-    }
-
     // Verify session is active for regular gameplay actions
     if (session.is_paused || session.status === 'PAUSED') {
       return res.status(400).json({ success: false, message: 'Match is currently PAUSED. Actions are frozen.' });
@@ -329,6 +355,34 @@ module.exports = async function handler(req, res) {
 
       if (scoreResult.duplicate) {
         return res.status(200).json({ success: false, message: 'Challenge already solved by your squad.' });
+      }
+
+      if (teamId) {
+        try {
+          const nextCompleted = chal.stageNumber || 1;
+          const { data: currentTeam } = await supabase
+            .from('teams')
+            .select('completed_stages')
+            .eq('session_id', sessionId)
+            .eq('id', teamId)
+            .single();
+
+          const updatedCompleted = Math.max(currentTeam?.completed_stages || 0, nextCompleted);
+          await supabase.from('teams').update({
+            completed_stages: updatedCompleted,
+            updated_at: new Date().toISOString()
+          }).eq('session_id', sessionId).eq('id', teamId);
+
+          await supabase.from('team_progress').upsert({
+            session_id: sessionId,
+            team_id: teamId,
+            level_id: chal.stageNumber || 1,
+            status: 'COMPLETED',
+            last_checkpoint_at: new Date().toISOString()
+          }, { onConflict: 'session_id,team_id,level_id' });
+        } catch (dbErr) {
+          console.warn('[SOLVE_CIVILIAN_CHALLENGE] Progress update warning:', dbErr.message);
+        }
       }
 
       await gameService.logSystem(sessionId, 'FORENSIC_SOLVE', teamId, `CTF Lab [${chal.title}] solved! Intelligence unlocked.`);
@@ -477,29 +531,6 @@ module.exports = async function handler(req, res) {
           message: `Accusation rejected: ${correctCount}/5 correct. Penalized -100 PTS.`
         });
       }
-    }
-
-    // Anti-Cheat / Proctoring Security Alert Event
-    if (action === 'SECURITY_ALERT') {
-      const { type, details, stage } = payload || {};
-      const alertRecord = {
-        session_id: sessionId,
-        team_id: teamId || null,
-        alert_type: type || 'PROCTORING_ALERT',
-        details: details || 'Proctoring violation event',
-        stage_number: stage || 1,
-        created_at: new Date().toISOString()
-      };
-
-      await supabase.from('security_alerts').insert(alertRecord);
-      await gameService.logSystem(
-        sessionId,
-        'SECURITY_ALERT',
-        teamId ? `TEAM-${teamId}` : 'AGENT',
-        `[${type || 'PROCTORING'}] Stage ${stage || 1}: ${details || 'Anti-cheat violation detected'}`
-      );
-
-      return res.status(200).json({ success: true, message: 'Security alert recorded' });
     }
 
     // Gameplay: Submit Accusation

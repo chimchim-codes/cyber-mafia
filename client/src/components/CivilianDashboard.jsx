@@ -10,6 +10,7 @@ import CivilianTrace from './CivilianTrace';
 import CivilianCTFLab from './CivilianCTFLab';
 import EvidenceBoard from './EvidenceBoard';
 import { playClick } from '../utils/soundEffects';
+import { PYTHON_CHALLENGES } from '../data/caseData';
 
 export default function CivilianDashboard({
   gameState,
@@ -142,7 +143,7 @@ export default function CivilianDashboard({
       {/* Tool Viewport */}
       {activeTool === 'PYTHON_LAB' && (
         <CivilianCTFLab
-          challenges={gameState?.challenges}
+          challenges={gameState?.challenges || PYTHON_CHALLENGES}
           currentStage={currentStage}
           completedStages={completedStages}
           onSolveChallenge={onSolveChallenge}

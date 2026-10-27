@@ -29,7 +29,7 @@ import {
   loadSavedGameState
 } from './data/caseData';
 
-import { toggleSound, playClick, playSuccess, playError, playAlarm } from './utils/soundEffects';
+import { toggleSound, playClick, playSuccess, playError, playAlarm, initAudio } from './utils/soundEffects';
 
 // Format seconds into MM:SS
 export const formatMinutesSeconds = (totalSec) => {
@@ -83,8 +83,63 @@ if (targetSocketUrl) {
 
 const DEFAULT_SESSION_ID = 'default-cyber-session';
 
+// Safe network fetch with timeout to prevent hung requests / net::ERR_TIMED_OUT
+export async function safeApiFetch(url, options = {}, timeoutMs = 7000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+    return res;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Preserve local forensic challenges and progression when merging server state
+function mergeServerStateWithLocal(serverState, prevState) {
+  if (!serverState) return prevState;
+  const isPlayingCivilian = prevState?.phase === 'CIVILIAN_PHASE' || serverState?.phase === 'CIVILIAN_PHASE';
+
+  const challenges = (serverState.challenges && Array.isArray(serverState.challenges) && serverState.challenges.length > 0)
+    ? serverState.challenges
+    : (prevState?.challenges && Array.isArray(prevState.challenges) && prevState.challenges.length > 0
+        ? prevState.challenges
+        : PYTHON_CHALLENGES);
+
+  const completedStages = (serverState.completedStages && Array.isArray(serverState.completedStages) && serverState.completedStages.length > 0)
+    ? serverState.completedStages
+    : (prevState?.completedStages || []);
+
+  const currentStage = serverState.currentStage 
+    || (completedStages.length > 0 ? Math.min(Math.max(...completedStages) + 1, 5) : (prevState?.currentStage || 1));
+
+  const unlockedEvidenceBatches = (serverState.unlockedEvidenceBatches && Array.isArray(serverState.unlockedEvidenceBatches) && serverState.unlockedEvidenceBatches.length > 0)
+    ? serverState.unlockedEvidenceBatches
+    : (prevState?.unlockedEvidenceBatches || [1]);
+
+  return {
+    ...prevState,
+    ...serverState,
+    phase: isPlayingCivilian ? 'CIVILIAN_PHASE' : (serverState.phase || prevState?.phase || 'LOBBY'),
+    status: isPlayingCivilian ? 'RUNNING' : (serverState.status || prevState?.status || 'NOT_STARTED'),
+    challenges,
+    currentStage,
+    completedStages,
+    unlockedEvidenceBatches,
+    hintsRemaining: serverState.hintsRemaining ?? prevState?.hintsRemaining ?? 3,
+    hintsUsedPerChallenge: serverState.hintsUsedPerChallenge || prevState?.hintsUsedPerChallenge || {},
+    systemLogs: (serverState.systemLogs && serverState.systemLogs.length > 0)
+      ? serverState.systemLogs
+      : (prevState?.systemLogs || [])
+  };
+}
+
 export default function App() {
   const [sessionId, setSessionId] = useState(DEFAULT_SESSION_ID);
+  const hasEnteredFullscreenRef = useRef(false);
   
   // Restore game state from localStorage so reload maintains all progress
   const [gameState, setGameState] = useState(() => {
@@ -213,23 +268,14 @@ export default function App() {
       if (keyToUse) {
         headers['x-admin-key'] = keyToUse;
       }
-      const res = await fetch(`/api/session?sessionId=${encodeURIComponent(sessionId)}${activeTeamId ? `&teamId=${activeTeamId}` : ''}`, {
+      const res = await safeApiFetch(`/api/session?sessionId=${encodeURIComponent(sessionId)}${activeTeamId ? `&teamId=${activeTeamId}` : ''}`, {
         headers
       });
       if (res.ok) {
         const state = await res.json();
-        setGameState(prev => {
-          if (prev?.phase === 'CIVILIAN_PHASE' && state?.phase === 'LOBBY') {
-            return {
-              ...state,
-              phase: 'CIVILIAN_PHASE',
-              status: 'RUNNING'
-            };
-          }
-          return state;
-        });
+        setGameState(prev => mergeServerStateWithLocal(state, prev));
         if (state.myTeam) {
-          setMyTeam(state.myTeam);
+          setMyTeam(prev => ({ ...prev, ...state.myTeam }));
         }
       }
     } catch (err) {
@@ -243,7 +289,7 @@ export default function App() {
     const savedPlayerName = localStorage.getItem('cyber_mafia_player_name');
 
     if (savedTeamId) {
-      fetch('/api/session', {
+      safeApiFetch('/api/session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -256,17 +302,8 @@ export default function App() {
       .then(res => res.json())
       .then(data => {
         if (data.state) {
-          setGameState(prev => {
-            if (prev?.phase === 'CIVILIAN_PHASE' && data.state?.phase === 'LOBBY') {
-              return {
-                ...data.state,
-                phase: 'CIVILIAN_PHASE',
-                status: 'RUNNING'
-              };
-            }
-            return data.state;
-          });
-          if (data.state.myTeam) setMyTeam(data.state.myTeam);
+          setGameState(prev => mergeServerStateWithLocal(data.state, prev));
+          if (data.state.myTeam) setMyTeam(prev => ({ ...prev, ...data.state.myTeam }));
           showToast(`Reconnected to Squad ${savedTeamId}`, 'SUCCESS');
         }
       })
@@ -327,8 +364,8 @@ export default function App() {
 
     socket.on('game_state_update', (state) => {
       if (state) {
-        setGameState(state);
-        if (state.myTeam) setMyTeam(state.myTeam);
+        setGameState(prev => mergeServerStateWithLocal(state, prev));
+        if (state.myTeam) setMyTeam(prev => ({ ...prev, ...state.myTeam }));
         if (state.phase === 'ROLE_ASSIGNMENT') setShowRoleModal(true);
         if (state.phase === 'DEFENCE_PHASE') playAlarm();
       }
@@ -427,6 +464,8 @@ export default function App() {
 
   // Fullscreen trigger helper
   const enterFullscreen = () => {
+    initAudio(); // Safely unlock Audio on user gesture
+    hasEnteredFullscreenRef.current = true;
     try {
       const elem = document.documentElement;
       if (elem.requestFullscreen) {
@@ -501,7 +540,7 @@ export default function App() {
     }
 
     try {
-      fetch('/api/game-action', {
+      safeApiFetch('/api/game-action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -509,7 +548,7 @@ export default function App() {
           sessionId,
           payload: newAlert
         })
-      }).catch(() => {});
+      }, 4000).catch(() => {});
     } catch (e) {}
 
     showToast(`⚠️ PROCTORING ALERT: ${details}`, 'ERROR');
@@ -528,7 +567,9 @@ export default function App() {
         document.msFullscreenElement
       );
       setIsFullscreen(isCurrentlyFs);
-      if (!isCurrentlyFs) {
+      if (isCurrentlyFs) {
+        hasEnteredFullscreenRef.current = true;
+      } else if (!isCurrentlyFs && hasEnteredFullscreenRef.current) {
         recordSecurityAlert('FULLSCREEN_EXITED', 'Investigator exited full screen mode.');
       }
     };
@@ -656,7 +697,7 @@ export default function App() {
     } catch (_) {}
 
     try {
-      const res = await fetch('/api/session', {
+      const res = await safeApiFetch('/api/session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -666,18 +707,12 @@ export default function App() {
           playerName
         })
       });
-      if (data.team) setMyTeam(prev => ({ ...prev, ...data.team, systemNo: finalSystemNo, name: finalTeamName }));
-      if (data.state) {
-        setGameState(prev => {
-          if (prev?.phase === 'CIVILIAN_PHASE' && data.state?.phase === 'LOBBY') {
-            return {
-              ...data.state,
-              phase: 'CIVILIAN_PHASE',
-              status: 'RUNNING'
-            };
-          }
-          return data.state;
-        });
+      if (res && res.ok) {
+        const data = await res.json();
+        if (data.team) setMyTeam(prev => ({ ...prev, ...data.team, systemNo: finalSystemNo, name: finalTeamName }));
+        if (data.state) {
+          setGameState(prev => mergeServerStateWithLocal(data.state, prev));
+        }
       }
     } catch (e) {
       if (socket && socket.connected) {
@@ -688,6 +723,7 @@ export default function App() {
 
   // Handler: Start Game (Supports standalone, socket, and authoritative API)
   const handleStartGame = async () => {
+    initAudio();
     let startTs = localStorage.getItem('cyber_mafia_start_time');
     if (!startTs) {
       startTs = String(Date.now());
@@ -722,11 +758,11 @@ export default function App() {
     try {
       const headers = { 'Content-Type': 'application/json' };
       if (adminKey) headers['x-admin-key'] = adminKey.trim();
-      fetch('/api/game-action', {
+      safeApiFetch('/api/game-action', {
         method: 'POST',
         headers,
         body: JSON.stringify({ action: 'START_GAME', sessionId })
-      }).catch(() => {});
+      }, 4000).catch(() => {});
     } catch (e) {}
 
     showToast('Investigation commenced! Stopwatch active. Fullscreen locked.', 'SUCCESS');
@@ -860,7 +896,7 @@ export default function App() {
     }
 
     try {
-      await fetch('/api/game-action', {
+      await safeApiFetch('/api/game-action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -869,7 +905,7 @@ export default function App() {
           teamId: myTeam?.id,
           payload: { challengeId, answer, stageNumber }
         })
-      });
+      }, 5000);
     } catch (e) {
       // offline fallback handled below
     }
@@ -1013,7 +1049,7 @@ export default function App() {
       }
 
       try {
-        const res = await fetch('/api/game-action', {
+        const res = await safeApiFetch('/api/game-action', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1022,13 +1058,15 @@ export default function App() {
             teamId: myTeam?.id,
             payload: { answers }
           })
-        });
-        const resData = await res.json();
-        if (resData.alreadySubmitted) {
-          playError();
-          showToast('❌ Submission rejected: Team has already submitted an accusation.', 'ERROR');
-          setMyTeam(prev => ({ ...prev, hasSubmittedAccusation: true }));
-          return;
+        }, 6000);
+        if (res && res.ok) {
+          const resData = await res.json();
+          if (resData.alreadySubmitted) {
+            playError();
+            showToast('❌ Submission rejected: Team has already submitted an accusation.', 'ERROR');
+            setMyTeam(prev => ({ ...prev, hasSubmittedAccusation: true }));
+            return;
+          }
         }
       } catch (e) {
         // standalone fallback handled below
@@ -1126,7 +1164,7 @@ export default function App() {
       setMyTeam(prev => ({ ...prev, hasSubmittedAccusation: true }));
       const suspectTeamId = answersOrSuspectId;
       try {
-        const res = await fetch('/api/game-action', {
+        const res = await safeApiFetch('/api/game-action', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1135,11 +1173,13 @@ export default function App() {
             teamId: myTeam?.id,
             payload: { suspectTeamId, attachedEvidenceIds, notes }
           })
-        });
-        const data = await res.json();
-        if (data.success) {
-          showToast(data.message, 'SUCCESS');
-          refreshGameState();
+        }, 6000);
+        if (res && res.ok) {
+          const data = await res.json();
+          if (data.success) {
+            showToast(data.message, 'SUCCESS');
+            refreshGameState();
+          }
         }
       } catch (e) {
         if (socket && socket.connected) {
