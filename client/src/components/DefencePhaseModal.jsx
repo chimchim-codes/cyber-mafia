@@ -68,13 +68,8 @@ export default function DefencePhaseModal({
           </div>
 
           <div className="text-slate-300">
-            <span className="text-slate-500">FORENSIC CHARGE: </span>
-            {activeAccusation.indictmentNotes}
-          </div>
-
-          <div className="flex items-center justify-between text-[11px] text-slate-500 pt-1">
-            <span>Attached Evidence: {activeAccusation.attachedEvidenceIds?.join(', ') || 'Forensic telemetry'}</span>
-            <span className="text-emerald-400 font-bold">Confidence: {activeAccusation.confidence}%</span>
+            <span className="text-slate-500">CHARGE: </span>
+            {activeAccusation.indictmentNotes || 'Formal accusation filed in the murder of Dr. Adrian Vale.'}
           </div>
         </div>
 

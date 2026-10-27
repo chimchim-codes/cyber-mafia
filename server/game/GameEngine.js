@@ -1,67 +1,74 @@
 // server/game/GameEngine.js
-// Core Game Engine for CYBER MAFIA
+// Core Game Engine for Dr. Adrian Vale Murder Mystery & Cyber Forensics
 
 const EventEmitter = require('events');
 const crypto = require('crypto');
-const { generateHackerChallenge, generateCivilianLabChallenges } = require('./challenges');
+const os = require('os');
+const fs = require('fs');
+const path = require('path');
+const { INVESTIGATION_LOCATIONS, generateHackerChallenge, generateCivilianLabChallenges } = require('./challenges');
 const EvidenceManager = require('./evidence');
 const BotAI = require('./botAI');
 
 class GameEngine extends EventEmitter {
   constructor() {
     super();
-    this.phase = 'LOBBY'; // LOBBY, ROLE_ASSIGNMENT, HACKER_PHASE, CIVILIAN_PHASE, DEFENCE_PHASE, REVEAL_PHASE, GAME_OVER
+    this.phase = 'LOBBY';
     this.round = 1;
     this.maxRounds = 5;
-    this.timer = 120; // seconds remaining in current phase
+    this.timer = 120;
     this.phaseDuration = {
       HACKER_PHASE: 90,
       CIVILIAN_PHASE: 150,
       DEFENCE_PHASE: 45,
-      REVEAL_PHASE: 15,
+      REVEAL_PHASE: 25,
       ROLE_ASSIGNMENT: 10
     };
     this.isPaused = false;
     this.timerInterval = null;
 
-    // Teams collection
+    // Start timestamp
+    this.startTime = new Date();
+
+    // Teams / Suspects collection
     this.teams = [];
-    this.hackerCount = 2; // default
-    this.totalTeamsCount = 8; // default (supports up to 15)
+    this.hackerCount = 1;
+    this.totalTeamsCount = 8;
 
     // Systems
     this.evidenceManager = new EvidenceManager();
     this.botAI = new BotAI(this);
 
-    // Active challenges pending submission
-    this.activeAttackChallenges = {}; // key: challengeId -> challenge object
-
-    // Civilian CTF Lab Challenges for current round
+    // Locations and CTF Lab Challenges
+    this.locations = INVESTIGATION_LOCATIONS;
     this.civilianLabChallenges = generateCivilianLabChallenges();
 
-    // Game Logs (Fictional cybersecurity logs)
+    // Active hacker attack challenges
+    this.activeAttackChallenges = {};
+
+    // System Logs
     this.systemLogs = [];
 
     // Chat messages
     this.chatMessages = [];
 
-    // Active Accusation and Defence State
+    // Active Accusation and Verdict State
     this.activeAccusation = null;
     this.defenseStatement = null;
-    this.juryVotes = {}; // teamId -> 'GUILTY' | 'NOT_GUILTY'
+    this.juryVotes = {};
     this.revealResult = null;
 
-    // Deception modifiers currently active
-    this.activeSpoofs = {}; // hackerTeamId -> { spoofedNode, spoofedSig }
-    this.disabledCivilianModules = {}; // teamId -> { module, untilEpoch }
+    // Deception modifiers
+    this.activeSpoofs = {};
+    this.disabledCivilianModules = {};
 
-    // Scoring Rules (Configurable by admin)
+    // Scoring Rules
     this.scoringRules = {
       COMPROMISE_SUCCESS: 100,
-      SOLVE_INVESTIGATION_CTF: 75,
-      CORRECT_HACKER_ACCUSATION: 300,
+      SOLVE_INVESTIGATION_CTF: 100,
+      CORRECT_HACKER_ACCUSATION: 500,
       SURVIVE_ROUND: 50,
-      FALSE_ACCUSATION_PENALTY: -100,
+      FALSE_ACCUSATION_PENALTY: -50,
       FAILED_ATTACK_PENALTY: -25,
       SUCCESSFUL_DECEPTION: 100
     };
@@ -69,30 +76,38 @@ class GameEngine extends EventEmitter {
     this.initDefaultTeams();
   }
 
-  initDefaultTeams(count = 8, hackers = 2) {
+  // Initialize suspects and investigator teams
+  initDefaultTeams(count = 8, hackers = 1) {
     this.totalTeamsCount = count;
     this.hackerCount = hackers;
     this.teams = [];
 
-    const defaultNames = [
-      'Ghost Protocol', 'Cyber Sentinel', 'Phantom Root', 'Zero Day Ops',
-      'Quantum Shield', 'Binary Vanguard', 'Dark Matrix', 'Cipher Guard',
-      'Echo Infiltrator', 'Aegis Core', 'Apex Predator', 'Stealth Daemon',
-      'Firewall Elite', 'Black Ice', 'Shadow Nexus'
+    const suspects = [
+      { id: 'S01', name: 'Dr. Mira Sen', role: 'CIVILIAN', title: 'Senior Research Fellow' },
+      { id: 'S02', name: 'Noah Mercer', role: 'CIVILIAN', title: 'Systems Architect' },
+      { id: 'S03', name: 'Felix Grant', role: 'CIVILIAN', title: 'Security Lead' },
+      { id: 'S04', name: 'Elena Ward', role: 'HACKER', title: 'Director of Operations (The Killer)' },
+      { id: 'S05', name: 'Inspector Cross', role: 'CIVILIAN', title: 'Lead Investigator' },
+      { id: 'S06', name: 'Agent Vance', role: 'CIVILIAN', title: 'Forensic Analyst' },
+      { id: 'S07', name: 'Officer Blake', role: 'CIVILIAN', title: 'Field Security' },
+      { id: 'S08', name: 'Sentinel Unit', role: 'CIVILIAN', title: 'Automated Defense' }
     ];
 
-    for (let i = 1; i <= count; i++) {
-      const id = (i < 10 ? 'C0' : 'C') + i;
+    for (let i = 0; i < count; i++) {
+      const s = suspects[i] || { id: `S0${i + 1}`, name: `Agent ${i + 1}`, role: 'CIVILIAN', title: 'Investigator' };
       this.teams.push({
-        id,
-        name: defaultNames[i - 1] || `Sector ${id}`,
+        id: s.id,
+        name: s.name,
+        title: s.title,
         players: [],
-        role: 'CIVILIAN', // determined at game start
+        role: s.role,
         secretRevealed: false,
         integrity: 100,
         score: 0,
-        isBot: true, // becomes false when human player joins team
+        isBot: true,
         isEliminated: false,
+        hintsUsedPerLocation: {},
+        totalHintsUsed: 0,
         modules: {
           dashboard: 'ACTIVE',
           investigation: 'ACTIVE',
@@ -113,12 +128,11 @@ class GameEngine extends EventEmitter {
       });
     }
 
-    this.logSystem('INITIALIZE', 'SYSTEM', `Game environment ready with ${count} teams.`);
+    this.logSystem('INITIALIZE', 'SYSTEM', `Investigation active with ${count} squads/suspects.`);
   }
 
   // Join or assign a player to a team
   joinTeam(socketId, playerName, teamId) {
-    // Remove player from previous team if any
     this.teams.forEach(t => {
       t.players = t.players.filter(p => p.socketId !== socketId);
       if (t.players.length === 0) {
@@ -128,7 +142,6 @@ class GameEngine extends EventEmitter {
 
     let targetTeam = this.teams.find(t => t.id === teamId);
     if (!targetTeam) {
-      // Pick first available team with < 3 players
       targetTeam = this.teams.find(t => t.players.length < 3) || this.teams[0];
     }
 
@@ -145,7 +158,6 @@ class GameEngine extends EventEmitter {
     return targetTeam;
   }
 
-  // Leave / Disconnect player
   removePlayer(socketId) {
     this.teams.forEach(t => {
       t.players = t.players.filter(p => p.socketId !== socketId);
@@ -156,45 +168,31 @@ class GameEngine extends EventEmitter {
     this.emitStateUpdate();
   }
 
-  // Start the Game: Secret Role Assignment & Phase 1
   startGame() {
+    this.startTime = new Date();
     this.phase = 'ROLE_ASSIGNMENT';
     this.round = 1;
     this.assignSecretRoles();
     this.timer = this.phaseDuration.ROLE_ASSIGNMENT;
     this.botAI.start();
 
-    this.logSystem('GAME_START', 'CORE', `CYBER MAFIA initiated. Round 1 in progress.`);
+    this.logSystem('GAME_START', 'CORE', `Murder investigation commenced at ${this.startTime.toLocaleTimeString()}.`);
     this.startTimer();
     this.emitStateUpdate();
   }
 
   assignSecretRoles() {
-    // Reset all to civilian
+    // Elena Ward is canonical killer; ensure Elena Ward has role HACKER
     this.teams.forEach(t => {
-      t.role = 'CIVILIAN';
       t.integrity = 100;
       t.secretRevealed = false;
       t.isEliminated = false;
-      t.modules = {
-        dashboard: 'ACTIVE',
-        investigation: 'ACTIVE',
-        evidenceVault: 'ACTIVE',
-        networkMonitor: 'ACTIVE'
-      };
+      t.hintsUsedPerLocation = {};
+      t.totalHintsUsed = 0;
+      t.role = t.name.includes('Elena') ? 'HACKER' : 'CIVILIAN';
     });
-
-    // Shuffle and pick hackers
-    const shuffledIndices = [...Array(this.teams.length).keys()].sort(() => Math.random() - 0.5);
-    for (let i = 0; i < this.hackerCount; i++) {
-      const idx = shuffledIndices[i];
-      if (this.teams[idx]) {
-        this.teams[idx].role = 'HACKER';
-      }
-    }
   }
 
-  // Timer Tick
   startTimer() {
     if (this.timerInterval) clearInterval(this.timerInterval);
     this.timerInterval = setInterval(() => {
@@ -209,41 +207,30 @@ class GameEngine extends EventEmitter {
     }, 1000);
   }
 
-  // Advance between game phases
   advancePhase() {
     if (this.phase === 'ROLE_ASSIGNMENT') {
-      this.phase = 'HACKER_PHASE';
-      this.timer = this.phaseDuration.HACKER_PHASE;
-      this.logSystem('PHASE_CHANGE', 'GLOBAL', `=== HACKER INFILTRATION PHASE ACTIVATED ===`);
-    } else if (this.phase === 'HACKER_PHASE') {
       this.phase = 'CIVILIAN_PHASE';
       this.timer = this.phaseDuration.CIVILIAN_PHASE;
-      this.logSystem('PHASE_CHANGE', 'GLOBAL', `=== CIVILIAN INVESTIGATION & DEFENCE PHASE ACTIVATED ===`);
+      this.logSystem('PHASE_CHANGE', 'GLOBAL', `Forensic Investigation Phase active.`);
     } else if (this.phase === 'CIVILIAN_PHASE') {
-      // Round conclusion
       this.evaluateRoundSurvival();
-      if (this.round >= this.maxRounds || this.checkWinCondition()) {
+      if (this.round >= this.maxRounds) {
         this.endGame();
         return;
       }
       this.round++;
-      this.phase = 'HACKER_PHASE';
-      this.timer = this.phaseDuration.HACKER_PHASE;
+      this.phase = 'CIVILIAN_PHASE';
+      this.timer = this.phaseDuration.CIVILIAN_PHASE;
       this.logSystem('ROUND_START', 'GLOBAL', `Round ${this.round} begins.`);
     } else if (this.phase === 'DEFENCE_PHASE') {
-      this.resolveAccusation();
+      this.phase = 'REVEAL_PHASE';
+      this.timer = this.phaseDuration.REVEAL_PHASE;
     } else if (this.phase === 'REVEAL_PHASE') {
       this.activeAccusation = null;
       this.defenseStatement = null;
       this.juryVotes = {};
-      this.revealResult = null;
-
-      if (this.checkWinCondition()) {
-        this.endGame();
-      } else {
-        this.phase = 'CIVILIAN_PHASE';
-        this.timer = 60; // continue investigation
-      }
+      this.phase = 'CIVILIAN_PHASE';
+      this.timer = 120;
     }
 
     this.emitStateUpdate();
@@ -257,351 +244,284 @@ class GameEngine extends EventEmitter {
     });
   }
 
-  checkWinCondition() {
-    const aliveHackers = this.teams.filter(t => t.role === 'HACKER' && !t.isEliminated);
-    const aliveCivilians = this.teams.filter(t => t.role === 'CIVILIAN' && !t.isEliminated);
-
-    if (aliveHackers.length === 0) {
-      this.logSystem('VICTORY', 'SECURITY', 'All Hackers eliminated! Civilian victory.');
-      return true;
-    }
-    if (aliveCivilians.length <= aliveHackers.length) {
-      this.logSystem('VICTORY', 'DARK_NET', 'Civilians outnumbered! Hackers dominate.');
-      return true;
-    }
-    return false;
-  }
-
   endGame() {
     this.phase = 'GAME_OVER';
     if (this.timerInterval) clearInterval(this.timerInterval);
     this.botAI.stop();
-    // Reveal all roles
-    this.teams.forEach(t => t.secretRevealed = true);
-    this.logSystem('GAME_OVER', 'GLOBAL', `Match concluded. Final scores tallied.`);
+    this.logSystem('GAME_OVER', 'CORE', `Investigation concluded.`);
     this.emitStateUpdate();
   }
 
-  // === HACKER ACTIONS ===
+  // Location Hint: 1 per location, 3 per whole game
+  requestLocationHint(teamId, locationId) {
+    const team = this.teams.find(t => t.id === teamId) || this.teams[0];
+    if (!team) return { success: false, message: 'Team not found.' };
 
-  generateAttackChallenge(attackerTeamId, targetTeamId, attackType) {
-    const attacker = this.teams.find(t => t.id === attackerTeamId);
-    const target = this.teams.find(t => t.id === targetTeamId);
+    if (!team.hintsUsedPerLocation) team.hintsUsedPerLocation = {};
+    if (team.totalHintsUsed === undefined) team.totalHintsUsed = 0;
 
-    if (!attacker || !target || attacker.role !== 'HACKER' || target.isEliminated) {
-      return null;
+    if (team.hintsUsedPerLocation[locationId]) {
+      return { success: false, message: 'Only 1 hint allowed per location.' };
     }
 
-    const challenge = generateHackerChallenge(attackType, target, attacker);
-    if (challenge) {
-      challenge.attackerTeamId = attackerTeamId;
-      challenge.targetTeamId = targetTeamId;
-      this.activeAttackChallenges[challenge.id] = challenge;
-    }
-    return challenge;
-  }
-
-  submitAttackSolution(attackerTeamId, challengeId, solution) {
-    const challenge = this.activeAttackChallenges[challengeId];
-    if (!challenge || challenge.attackerTeamId !== attackerTeamId) {
-      return { success: false, message: 'Invalid or expired challenge.' };
+    if (team.totalHintsUsed >= 3) {
+      return { success: false, message: 'Limit reached: Maximum 3 hints allowed per whole game.' };
     }
 
-    const attacker = this.teams.find(t => t.id === attackerTeamId);
-    const target = this.teams.find(t => t.id === challenge.targetTeamId);
+    const loc = this.locations.find(l => l.id === locationId);
+    if (!loc) return { success: false, message: 'Location not found.' };
 
-    // Normalize solution comparison
-    const isCorrect = (solution || '').trim().toLowerCase() === (challenge.expectedSolution || '').trim().toLowerCase();
+    team.hintsUsedPerLocation[locationId] = true;
+    team.totalHintsUsed += 1;
 
-    if (!isCorrect) {
-      attacker.score += this.scoringRules.FAILED_ATTACK_PENALTY;
-      delete this.activeAttackChallenges[challengeId];
-      this.logSystem('ATTACK_FAIL', `NODE-${attacker.id}`, `Infiltration attempt failed against ${target.id}`);
-      this.emitStateUpdate();
-      return { success: false, message: 'Attack payload rejected. Trace alert triggered!' };
-    }
-
-    // SUCCESSFUL COMPROMISE
-    delete this.activeAttackChallenges[challengeId];
-    attacker.score += this.scoringRules.COMPROMISE_SUCCESS;
-
-    // Apply damage & module lock to target
-    let moduleTarget = 'evidenceVault';
-    if (challenge.type === 'COOKIE_SHIFT') {
-      moduleTarget = 'evidenceVault';
-      target.integrity = Math.max(0, target.integrity - 20);
-      target.modules.evidenceVault = 'DISABLED';
-    } else if (challenge.type === 'TOKEN_HUNT') {
-      moduleTarget = 'networkMonitor';
-      target.integrity = Math.max(0, target.integrity - 25);
-      target.modules.networkMonitor = 'DISABLED';
-    } else if (challenge.type === 'ROUTE_BREAK') {
-      moduleTarget = 'investigation';
-      target.integrity = Math.max(0, target.integrity - 30);
-      target.modules.investigation = 'DISABLED';
-    } else if (challenge.type === 'PACKET_DECODE') {
-      moduleTarget = 'dashboard';
-      target.integrity = Math.max(0, target.integrity - 20);
-      target.modules.dashboard = 'WARNING';
-    }
-
-    if (target.integrity <= 0) {
-      target.isEliminated = true;
-      this.logSystem('COMPROMISED', target.id, `CRITICAL: Team ${target.id} system integrity collapsed!`);
-    }
-
-    // Check if hacker had active spoof
-    const spoofData = this.activeSpoofs[attackerTeamId] || {};
-    delete this.activeSpoofs[attackerTeamId]; // one-time use
-
-    // Create Evidence
-    const evidence = this.evidenceManager.createAttackEvidence({
-      attackerTeam: attacker,
-      targetTeam: target,
-      attackType: challenge.type,
-      signature: challenge.signature,
-      route: challenge.initialData?.sampleBase || `/api/v1/${moduleTarget.toLowerCase()}`,
-      moduleAffected: moduleTarget,
-      spoofedNode: spoofData.spoofedNode,
-      spoofedSig: spoofData.spoofedSig
-    });
-
-    target.evidenceCount++;
-    target.attackHistory.push({
-      attackType: challenge.type,
-      timestamp: evidence.timestamp,
-      moduleAffected: moduleTarget,
-      damage: 20
-    });
-
-    // Generate System Logs
-    const reportedNode = spoofData.spoofedNode || `NODE-${attacker.id}`;
-    this.logSystem('BREACH', reportedNode, `${target.id} ${moduleTarget} unauthorized access [Sig: ${evidence.attackSignature}]`);
-    this.logSystem('ANOMALY', target.id, `Session state modified. Integrity dropped to ${target.integrity}%`);
-
+    this.logSystem('HINT', team.id, `Hint unlocked for ${loc.name}. Hints remaining: ${3 - team.totalHintsUsed}/3`);
     this.emitStateUpdate();
 
     return {
       success: true,
-      message: `Target ${target.id} compromised! ${moduleTarget} offline. Evidence generated.`,
-      damage: 20,
-      evidenceId: evidence.id
+      hint: loc.hint,
+      locationId: loc.id,
+      locationName: loc.name,
+      totalHintsUsed: team.totalHintsUsed,
+      hintsRemaining: 3 - team.totalHintsUsed
     };
   }
 
-  // Hacker Deception Abilities
-  useDeception(hackerTeamId, abilityType, payload) {
-    const hacker = this.teams.find(t => t.id === hackerTeamId);
-    if (!hacker || hacker.role !== 'HACKER') {
-      return { success: false, message: 'Unauthorized action.' };
-    }
-
-    const now = Date.now();
-
-    switch (abilityType) {
-      case 'SPOOF': {
-        const targetSuspect = this.teams.find(t => t.id === payload.fakeSuspectTeamId);
-        if (!targetSuspect) return { success: false, message: 'Select a valid team to frame.' };
-        this.activeSpoofs[hackerTeamId] = {
-          spoofedNode: `NODE-${targetSuspect.id}`,
-          spoofedSig: 'CS-' + (Math.floor(Math.random() * 90) + 10)
-        };
-        hacker.score += this.scoringRules.SUCCESSFUL_DECEPTION;
-        this.logSystem('DECEPTION', 'DARK_NET', `Stealth routing engaged: signature masquerade primed.`);
-        this.emitStateUpdate();
-        return { success: true, message: `Next attack will appear originating from NODE-${targetSuspect.id}.` };
-      }
-
-      case 'ERASE': {
-        const evidenceId = payload.evidenceId;
-        const erased = this.evidenceManager.eraseEvidence(evidenceId, hackerTeamId);
-        if (erased) {
-          hacker.score += this.scoringRules.SUCCESSFUL_DECEPTION;
-          this.logSystem('DATA_WIPE', 'KERNEL', `Evidence index ${evidenceId} wiped from forensic storage.`);
-          this.emitStateUpdate();
-          return { success: true, message: `Evidence ${evidenceId} scrubbed from records.` };
-        }
-        return { success: false, message: 'Evidence not found or already purged.' };
-      }
-
-      case 'MISDIRECT': {
-        const fakeTeam = this.teams.find(t => t.id === payload.fakeTeamId);
-        if (!fakeTeam) return { success: false, message: 'Invalid team.' };
-        this.logSystem('AUDIT_WARN', `NODE-${fakeTeam.id}`, `Suspicious credential replay detected on port 443`);
-        hacker.score += this.scoringRules.SUCCESSFUL_DECEPTION;
-        this.emitStateUpdate();
-        return { success: true, message: `Injected suspicious event attributed to NODE-${fakeTeam.id}.` };
-      }
-
-      case 'COUNTERATTACK': {
-        const targetCivilian = this.teams.find(t => t.id === payload.targetCivilianId);
-        if (!targetCivilian) return { success: false, message: 'Invalid target.' };
-        targetCivilian.modules.investigation = 'DISABLED';
-        this.logSystem('JAMMING', targetCivilian.id, `Investigation Terminal jammed by counter-frequency attack.`);
-        this.emitStateUpdate();
-        return { success: true, message: `Civilian ${targetCivilian.id}'s investigation tools disabled for 45s.` };
-      }
-
-      case 'IMPERSONATE': {
-        this.logSystem('SECURITY_ALERT', 'ROOT_DAEMON', payload.fakeLogText || `Kernel integrity check failed for sector C02.`);
-        hacker.score += this.scoringRules.SUCCESSFUL_DECEPTION;
-        this.emitStateUpdate();
-        return { success: true, message: `Fake system log entry dispatched.` };
-      }
-
-      default:
-        return { success: false, message: 'Unknown deception ability.' };
-    }
-  }
-
-  // === CIVILIAN ACTIONS ===
-
+  // Solve Civilian CTF Lab Challenge
   solveCivilianChallenge(teamId, challengeId, answer) {
-    const team = this.teams.find(t => t.id === teamId);
+    const team = this.teams.find(t => t.id === teamId) || this.teams[0];
     const chal = this.civilianLabChallenges.find(c => c.id === challengeId);
 
     if (!team || !chal) {
       return { success: false, message: 'Challenge not found.' };
     }
 
-    if (chal.solvedBy && chal.solvedBy.includes(teamId)) {
-      return { success: false, message: 'Challenge already solved by your team.' };
+    if (chal.solvedBy && chal.solvedBy.includes(team.id)) {
+      return { success: false, message: 'Challenge already solved.' };
     }
 
     const isCorrect = (answer || '').trim().toLowerCase() === (chal.expected || '').trim().toLowerCase();
 
     if (isCorrect) {
       if (!chal.solvedBy) chal.solvedBy = [];
-      chal.solvedBy.push(teamId);
-      team.score += chal.rewardScore || 75;
+      chal.solvedBy.push(team.id);
+      team.score += chal.rewardScore || 100;
 
-      // Unlock matching evidence clue or grant new forensic intelligence
-      this.logSystem('FORENSIC_SOLVE', team.id, `CTF Lab Challenge [${chal.title}] solved! Intelligence unlocked.`);
+      this.logSystem('FORENSIC_SOLVE', team.id, `Solved [${chal.title}]. Clue unlocked.`);
 
-      // Enhance any existing evidence related to this clue
+      // Enhance evidence in EvidenceManager
       this.evidenceManager.evidenceList.forEach(ev => {
-        this.evidenceManager.enhanceEvidence(ev.id, teamId, chal.evidenceClue);
+        this.evidenceManager.enhanceEvidence(ev.id, team.id, chal.evidenceClue);
       });
 
       this.emitStateUpdate();
       return {
         success: true,
-        message: `Challenge Solved! +${chal.rewardScore} Points. Forensic Clue: "${chal.evidenceClue}"`,
+        message: `Challenge Solved! +${chal.rewardScore} PTS. Clue unlocked: "${chal.evidenceClue}"`,
         clue: chal.evidenceClue
       };
     } else {
-      return { success: false, message: 'Incorrect solution. Inspect the clue and try again.' };
+      return { success: false, message: 'Incorrect answer. Check the prompt or request a hint.' };
     }
   }
 
-  // Submit Accusation
-  submitAccusation(accusingTeamId, suspectTeamId, attachedEvidenceIds, indictmentNotes) {
-    const accuser = this.teams.find(t => t.id === accusingTeamId);
-    const suspect = this.teams.find(t => t.id === suspectTeamId);
+  // Write start and stop timestamps directly to desktop
+  writeDesktopTimestamp(teamName, teamId, answers, score, isSolved) {
+    const startTime = this.startTime || new Date(Date.now() - 600000);
+    const stopTime = new Date();
+    const diffSec = Math.max(0, Math.round((stopTime.getTime() - startTime.getTime()) / 1000));
+    const mins = Math.floor(diffSec / 60);
+    const secs = diffSec % 60;
+    const durationStr = `${mins}m ${secs}s (${diffSec} seconds)`;
 
-    if (!accuser || !suspect) {
-      return { success: false, message: 'Invalid accusation target.' };
+    const q5Text = Array.isArray(answers.q5) ? answers.q5.sort().join(', ') : (answers.q5 || 'None');
+    const isQ1 = answers.q1 === 'D';
+    const isQ2 = answers.q2 === 'A';
+    const isQ3 = answers.q3 === 'B';
+    const isQ4 = answers.q4 === 'D';
+    const isQ5 = Array.isArray(answers.q5) && ['A', 'B', 'C', 'D'].every(o => answers.q5.includes(o)) && answers.q5.length === 4;
+
+    const report = [
+      `======================================================================`,
+      `  INTERNAL TECH FEST: DR. ADRIAN VALE MURDER CASE - TRIBUNAL RECORD   `,
+      `======================================================================`,
+      `Investigator / Team : ${teamName || 'Investigator'} (${teamId || 'SOLO'})`,
+      `Verdict             : ${isSolved ? 'CASE SOLVED - ELENA WARD GUILTY AS CHARGED' : 'INCORRECT ACCUSATION'}`,
+      `Score               : ${score} / 5 Questions Correct`,
+      `----------------------------------------------------------------------`,
+      `TIMESTAMPS:`,
+      `  STARTED AT        : ${startTime.toLocaleString()} [${startTime.toISOString()}]`,
+      `  STOPPED AT        : ${stopTime.toLocaleString()} [${stopTime.toISOString()}]`,
+      `  TOTAL DURATION    : ${durationStr}`,
+      `----------------------------------------------------------------------`,
+      `ACCUSATION MCQ SUBMISSIONS:`,
+      `  1. Killer         : ${answers.q1 || 'None'} -> Elena Ward (${isQ1 ? 'CORRECT' : 'WRONG'})`,
+      `  2. Method/Weapon  : ${answers.q2 || 'None'} -> Poison administered through a drink (${isQ2 ? 'CORRECT' : 'WRONG'})`,
+      `  3. Motive         : ${answers.q3 || 'None'} -> Preventing Adrian from exposing unauthorized exports (${isQ3 ? 'CORRECT' : 'WRONG'})`,
+      `  4. Accomplice     : ${answers.q4 || 'None'} -> No accomplice established (${isQ4 ? 'CORRECT' : 'WRONG'})`,
+      `  5. Evidence       : [${q5Text}] -> MED-11, DATA-09, GM-20, GM-21 (${isQ5 ? 'CORRECT' : 'WRONG'})`,
+      `======================================================================`,
+      `Generated at: ${new Date().toISOString()}`
+    ].join('\n');
+
+    console.log('\n' + report + '\n');
+
+    // Attempt to write to user's Desktop
+    try {
+      const desktopDir = path.join(os.homedir(), 'Desktop');
+      if (fs.existsSync(desktopDir)) {
+        fs.writeFileSync(path.join(desktopDir, 'accusation_timestamp.txt'), report, 'utf8');
+        fs.writeFileSync(path.join(desktopDir, 'timestamp.txt'), report, 'utf8');
+        console.log(`[DESKTOP] Written successfully: ${path.join(desktopDir, 'accusation_timestamp.txt')}`);
+      }
+    } catch (err) {
+      console.warn(`[DESKTOP WARNING] Could not write directly to Desktop: ${err.message}`);
     }
 
-    if (accuser.id === suspect.id) {
-      return { success: false, message: 'You cannot accuse your own team.' };
+    // Write workspace copy
+    try {
+      fs.writeFileSync(path.join(__dirname, '../../accusation_timestamp.txt'), report, 'utf8');
+    } catch (err) {
+      // ignore
     }
 
-    if (this.phase === 'DEFENCE_PHASE') {
-      return { success: false, message: 'An accusation trial is already under way.' };
-    }
-
-    // Calculate initial confidence
-    let confidence = 50 + (attachedEvidenceIds.length * 15);
-    confidence = Math.min(confidence, 98);
-
-    this.activeAccusation = {
-      id: 'ACC-' + Date.now(),
-      accusingTeamId: accuser.id,
-      accusingTeamName: accuser.name,
-      suspectTeamId: suspect.id,
-      suspectTeamName: suspect.name,
-      attachedEvidenceIds: attachedEvidenceIds || [],
-      indictmentNotes: indictmentNotes || 'Forensic pattern correlation indicates malicious infiltration.',
-      confidence,
-      votesGuilty: 0,
-      votesNotGuilty: 0,
-      timestamp: new Date().toTimeString().split(' ')[0]
+    return {
+      startTime: startTime.toISOString(),
+      stopTime: stopTime.toISOString(),
+      startTimeStr: startTime.toLocaleTimeString(),
+      stopTimeStr: stopTime.toLocaleTimeString(),
+      durationStr,
+      diffSec,
+      reportText: report
     };
-
-    this.phase = 'DEFENCE_PHASE';
-    this.timer = this.phaseDuration.DEFENCE_PHASE;
-    this.defenseStatement = null;
-    this.juryVotes = {};
-
-    this.logSystem('INDICTMENT', 'TRIBUNAL', `EMERGENCY: Team ${accuser.id} formally accuses Team ${suspect.id} of HACKER INFILTRATION!`);
-    this.emitStateUpdate();
-
-    return { success: true, message: 'Indictment filed! Commencing 45-second Defence Phase.' };
   }
 
-  // Set defense statement by the accused team
-  setDefenseStatement(teamId, statement) {
-    if (!this.activeAccusation || this.activeAccusation.suspectTeamId !== teamId) {
-      return { success: false, message: 'Only the accused team can submit an official defense statement.' };
+  // Submit MCQ Accusation
+  // Answer key: 1-D, 2-A, 3-B, 4-D, 5-A/B/C/D
+  submitMCQAccusation(accusingTeamId, answers) {
+    const accuser = this.teams.find(t => t.id === accusingTeamId) || this.teams[0];
+
+    const isQ1 = answers?.q1 === 'D';
+    const isQ2 = answers?.q2 === 'A';
+    const isQ3 = answers?.q3 === 'B';
+    const isQ4 = answers?.q4 === 'D';
+    const q5Arr = Array.isArray(answers?.q5) ? answers.q5 : [];
+    const isQ5 = ['A', 'B', 'C', 'D'].every(o => q5Arr.includes(o)) && q5Arr.length === 4;
+
+    const score = (isQ1 ? 1 : 0) + (isQ2 ? 1 : 0) + (isQ3 ? 1 : 0) + (isQ4 ? 1 : 0) + (isQ5 ? 1 : 0);
+    const isSolved = isQ1 && isQ2 && isQ3 && isQ4 && isQ5;
+
+    const tsInfo = this.writeDesktopTimestamp(accuser.name, accuser.id, answers || {}, score, isSolved);
+
+    if (isSolved) {
+      accuser.score += 500;
+      this.logSystem('INDICTMENT', 'TRIBUNAL', `CASE SOLVED! Elena Ward convicted of Dr. Adrian Vale's murder. +500 PTS.`);
+    } else {
+      accuser.score = Math.max(0, accuser.score - 50);
+      this.logSystem('INDICTMENT', 'TRIBUNAL', `ACCUSATION FAILED: ${score}/5 correct. Penalized -50 PTS.`);
     }
-    this.defenseStatement = statement;
-    this.logSystem('DEFENSE_REBUTTAL', teamId, `Accused Team ${teamId} states: "${statement}"`);
-    this.emitStateUpdate();
-    return { success: true, message: 'Defense statement broadcasted to tribunal.' };
-  }
-
-  // Vote during defense phase
-  castJuryVote(teamId, vote) { // vote: 'GUILTY' | 'NOT_GUILTY'
-    if (this.phase !== 'DEFENCE_PHASE') return { success: false, message: 'Voting only open during Defence Phase.' };
-    this.juryVotes[teamId] = vote;
-    this.emitStateUpdate();
-    return { success: true, message: `Vote recorded: ${vote}` };
-  }
-
-  // Resolve Accusation at end of defense phase
-  resolveAccusation() {
-    if (!this.activeAccusation) return;
-
-    const suspect = this.teams.find(t => t.id === this.activeAccusation.suspectTeamId);
-    const accuser = this.teams.find(t => t.id === this.activeAccusation.accusingTeamId);
-
-    const isActuallyHacker = suspect && suspect.role === 'HACKER';
 
     this.phase = 'REVEAL_PHASE';
-    this.timer = this.phaseDuration.REVEAL_PHASE;
+    this.timer = 30;
 
-    if (isActuallyHacker) {
-      // Correct accusation
-      accuser.score += this.scoringRules.CORRECT_HACKER_ACCUSATION;
-      suspect.isEliminated = true;
-      suspect.secretRevealed = true;
-      this.revealResult = {
-        success: true,
-        suspectTeamId: suspect.id,
-        suspectTeamName: suspect.name,
-        actualRole: 'HACKER',
-        penaltyMessage: `🚨 HACKER IDENTIFIED! Team ${suspect.id} quarantined. Accuser awarded +300 PTS.`
-      };
-      this.logSystem('VERDICT', 'TRIBUNAL', `GUILTY! Team ${suspect.id} confirmed as HACKER.`);
-    } else {
-      // False accusation
-      accuser.score += this.scoringRules.FALSE_ACCUSATION_PENALTY;
-      suspect.score += 50; // innocence compensation
-      this.revealResult = {
-        success: false,
-        suspectTeamId: suspect.id,
-        suspectTeamName: suspect.name,
-        actualRole: 'CIVILIAN',
-        penaltyMessage: `❌ FALSE ACCUSATION! Team ${suspect.id} is an innocent CIVILIAN. Accuser penalized -100 PTS.`
-      };
-      this.logSystem('VERDICT', 'TRIBUNAL', `ACQUITTED! Team ${suspect.id} is an innocent CIVILIAN.`);
-    }
+    this.revealResult = {
+      success: isSolved,
+      isSolved,
+      score,
+      totalQuestions: 5,
+      suspectTeamName: 'Elena Ward',
+      suspectTeamId: 'S04',
+      actualRole: 'KILLER',
+      penaltyMessage: isSolved
+        ? `🚨 MURDER SOLVED! Elena Ward convicted of murdering Dr. Adrian Vale! +500 PTS awarded.`
+        : `❌ ACCUSATION INCORRECT: ${score}/5 questions correct. Review forensic evidence and try again.`,
+      timestampInfo: tsInfo
+    };
 
     this.emitStateUpdate();
+    return {
+      success: true,
+      isSolved,
+      score,
+      totalQuestions: 5,
+      timestampInfo: tsInfo,
+      revealResult: this.revealResult
+    };
   }
 
-  // Add a system log
+  // Backward compatible submitAccusation
+  submitAccusation(accusingTeamId, suspectTeamId, attachedEvidenceIds, indictmentNotes) {
+    // If suspect is Elena Ward, treat as correct
+    return this.submitMCQAccusation(accusingTeamId, {
+      q1: suspectTeamId === 'S04' ? 'D' : 'A',
+      q2: 'A',
+      q3: 'B',
+      q4: 'D',
+      q5: ['A', 'B', 'C', 'D']
+    });
+  }
+
+  setDefenseStatement(teamId, statement) {
+    this.defenseStatement = statement;
+    this.emitStateUpdate();
+    return { success: true };
+  }
+
+  castJuryVote(teamId, vote) {
+    this.juryVotes[teamId] = vote;
+    this.emitStateUpdate();
+    return { success: true };
+  }
+
+  // Generate Attack Challenge (for Hacker role)
+  generateAttackChallenge(attackerTeamId, targetTeamId, attackType) {
+    const attacker = this.teams.find(t => t.id === attackerTeamId);
+    const target = this.teams.find(t => t.id === targetTeamId);
+    if (!attacker || !target) return null;
+
+    const chal = generateHackerChallenge(attackType, target, attacker);
+    if (chal) {
+      this.activeAttackChallenges[chal.id] = { ...chal, attackerTeamId, targetTeamId };
+    }
+    return chal;
+  }
+
+  submitAttackSolution(attackerTeamId, challengeId, solution) {
+    const chal = this.activeAttackChallenges[challengeId];
+    if (!chal) return { success: false, message: 'Challenge expired.' };
+
+    const attacker = this.teams.find(t => t.id === attackerTeamId);
+    const target = this.teams.find(t => t.id === chal.targetTeamId);
+    const isCorrect = (solution || '').trim() === chal.expectedSolution;
+
+    if (isCorrect) {
+      attacker.score += 100;
+      target.integrity = Math.max(0, target.integrity - 20);
+      this.evidenceManager.createAttackEvidence({
+        attackerTeam: attacker,
+        targetTeam: target,
+        attackType: chal.type,
+        signature: chal.signature,
+        moduleAffected: 'Evidence Vault'
+      });
+      delete this.activeAttackChallenges[challengeId];
+      this.emitStateUpdate();
+      return { success: true, message: 'Target compromised! +100 PTS' };
+    } else {
+      attacker.score = Math.max(0, attacker.score - 25);
+      this.emitStateUpdate();
+      return { success: false, message: 'Payload rejected.' };
+    }
+  }
+
+  useDeception(teamId, abilityType, payload) {
+    const team = this.teams.find(t => t.id === teamId);
+    if (!team || team.role !== 'HACKER') return { success: false, message: 'Unauthorized.' };
+    team.score += 50;
+    this.emitStateUpdate();
+    return { success: true, message: `${abilityType} ability executed.` };
+  }
+
   logSystem(type, source, message) {
     const timestamp = new Date().toTimeString().split(' ')[0];
     const log = {
@@ -612,32 +532,29 @@ class GameEngine extends EventEmitter {
       message
     };
     this.systemLogs.unshift(log);
-    if (this.systemLogs.length > 200) this.systemLogs.pop();
+    if (this.systemLogs.length > 100) this.systemLogs.pop();
   }
 
-  // Add chat message
   addChatMessage({ senderTeamId, senderTeamName, channel, text, evidenceAttachment = null }) {
     const msg = {
       id: 'MSG-' + Date.now() + Math.random().toString(36).substring(7),
       timestamp: new Date().toTimeString().split(' ')[0],
       senderTeamId,
       senderTeamName,
-      channel, // 'PUBLIC', 'TEAM', 'BROADCAST'
+      channel,
       text,
       evidenceAttachment
     };
     this.chatMessages.push(msg);
-    if (this.chatMessages.length > 300) this.chatMessages.shift();
+    if (this.chatMessages.length > 200) this.chatMessages.shift();
     this.emit('new_chat', msg);
     return msg;
   }
 
-  // Generate safe state object for client based on player role
   getClientState(teamId, isAdmin = false) {
     const team = this.teams.find(t => t.id === teamId);
     const role = team ? team.role : 'SPECTATOR';
 
-    // Mask secret roles of other teams unless revealed or isAdmin
     const sanitizedTeams = this.teams.map(t => {
       const isSelf = t.id === teamId;
       const isHackerAlly = role === 'HACKER' && t.role === 'HACKER';
@@ -646,6 +563,7 @@ class GameEngine extends EventEmitter {
       return {
         id: t.id,
         name: t.name,
+        title: t.title,
         playersCount: t.players.length,
         integrity: t.integrity,
         isEliminated: t.isEliminated,
@@ -657,12 +575,18 @@ class GameEngine extends EventEmitter {
       };
     });
 
+    const totalHints = team ? (team.totalHintsUsed || 0) : 0;
+
     return {
       phase: this.phase,
       round: this.round,
       maxRounds: this.maxRounds,
       timer: this.timer,
       isPaused: this.isPaused,
+      startTime: this.startTime ? this.startTime.toISOString() : new Date().toISOString(),
+      hintsRemaining: Math.max(0, 3 - totalHints),
+      hintsUsedPerLocation: team ? (team.hintsUsedPerLocation || {}) : {},
+      locations: this.locations,
       myTeam: team ? {
         ...team,
         visibleEvidence: this.evidenceManager.getVisibleEvidenceForTeam(teamId, isAdmin)
@@ -674,15 +598,19 @@ class GameEngine extends EventEmitter {
       } : null,
       civilianLabChallenges: this.civilianLabChallenges.map(c => ({
         id: c.id,
+        locationId: c.locationId,
+        locationName: c.locationName,
+        room: c.room,
         category: c.category,
         title: c.title,
         difficulty: c.difficulty,
         rewardScore: c.rewardScore,
         description: c.description,
         prompt: c.prompt,
-        isSolved: c.solvedBy?.includes(teamId) || false
+        clueId: c.clueId,
+        isSolved: c.solvedBy?.includes(team?.id) || false
       })),
-      systemLogs: this.systemLogs.slice(0, 50),
+      systemLogs: this.systemLogs.slice(0, 40),
       activeAccusation: this.activeAccusation,
       defenseStatement: this.defenseStatement,
       juryVotesCount: Object.keys(this.juryVotes).length,

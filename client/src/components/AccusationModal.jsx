@@ -1,46 +1,127 @@
 // client/src/components/AccusationModal.jsx
 import React, { useState } from 'react';
-import { ShieldAlert, X, Pin, Send, AlertTriangle } from 'lucide-react';
+import { ShieldAlert, X, Send, CheckCircle2 } from 'lucide-react';
 import { playClick, playAlarm } from '../utils/soundEffects';
+
+const MCQ_QUESTIONS = [
+  {
+    id: 'q1',
+    number: 1,
+    question: 'Who murdered Dr. Adrian Vale?',
+    type: 'single',
+    options: [
+      { key: 'A', label: 'Dr. Mira Sen' },
+      { key: 'B', label: 'Noah Mercer' },
+      { key: 'C', label: 'Felix Grant' },
+      { key: 'D', label: 'Elena Ward' }
+    ]
+  },
+  {
+    id: 'q2',
+    number: 2,
+    question: 'What was the murder weapon or method?',
+    type: 'single',
+    options: [
+      { key: 'A', label: 'Poison administered through a drink' },
+      { key: 'B', label: 'Tampered laboratory equipment' },
+      { key: 'C', label: 'A lethal injection' },
+      { key: 'D', label: 'Blunt-force trauma' }
+    ]
+  },
+  {
+    id: 'q3',
+    number: 3,
+    question: 'What was the killer’s primary motive?',
+    type: 'single',
+    options: [
+      { key: 'A', label: 'Revenge over a personal conflict' },
+      { key: 'B', label: 'Preventing Adrian from exposing unauthorized research exports' },
+      { key: 'C', label: 'Stealing Adrian’s research position' },
+      { key: 'D', label: 'Retaliation for revoked system access' }
+    ]
+  },
+  {
+    id: 'q4',
+    number: 4,
+    question: 'Who assisted the killer in carrying out or concealing the crime?',
+    type: 'single',
+    options: [
+      { key: 'A', label: 'Dr. Mira Sen' },
+      { key: 'B', label: 'Noah Mercer' },
+      { key: 'C', label: 'Felix Grant' },
+      { key: 'D', label: 'No accomplice has been established' }
+    ]
+  },
+  {
+    id: 'q5',
+    number: 5,
+    question: 'Which pieces of evidence support the accusation? (Select all that apply.)',
+    type: 'multi',
+    options: [
+      { key: 'A', label: 'MED-11 — Medical report confirming poisoning' },
+      { key: 'B', label: 'DATA-09 — Records of unauthorized model exports' },
+      { key: 'C', label: 'GM-20 — Sealed correspondence connecting Elena to the export scheme and knowledge of Adrian’s audit' },
+      { key: 'D', label: 'GM-21 — Authenticated corroborating evidence connecting Elena to the poisoning' }
+    ]
+  }
+];
 
 export default function AccusationModal({
   isOpen,
   onClose,
-  allTeams,
-  myTeam,
-  visibleEvidence,
-  prefilledSuspectId,
-  prefilledEvidenceIds,
   onSubmitAccusation
 }) {
-  const [suspectTeamId, setSuspectTeamId] = useState(prefilledSuspectId || 'C02');
-  const [selectedEvidenceIds, setSelectedEvidenceIds] = useState(prefilledEvidenceIds || []);
-  const [indictmentNotes, setIndictmentNotes] = useState('');
+  const [answers, setAnswers] = useState({
+    q1: '',
+    q2: '',
+    q3: '',
+    q4: '',
+    q5: []
+  });
+  const [errorMsg, setErrorMsg] = useState('');
 
   if (!isOpen) return null;
 
-  const toggleEvidence = (id) => {
+  const handleSelectSingle = (qId, optionKey) => {
     playClick();
-    setSelectedEvidenceIds(prev => 
-      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
-    );
+    setErrorMsg('');
+    setAnswers(prev => ({
+      ...prev,
+      [qId]: optionKey
+    }));
   };
 
-  const calculateConfidence = () => {
-    let score = 50 + (selectedEvidenceIds.length * 15);
-    return Math.min(score, 98);
+  const handleToggleMulti = (optionKey) => {
+    playClick();
+    setErrorMsg('');
+    setAnswers(prev => {
+      const current = prev.q5 || [];
+      const updated = current.includes(optionKey)
+        ? current.filter(k => k !== optionKey)
+        : [...current, optionKey];
+      return { ...prev, q5: updated };
+    });
   };
 
   const handleSubmit = (e) => {
     e.preventDefault();
+    if (!answers.q1 || !answers.q2 || !answers.q3 || !answers.q4) {
+      setErrorMsg('Please answer Questions 1 through 4.');
+      return;
+    }
+    if (!answers.q5 || answers.q5.length === 0) {
+      setErrorMsg('Please select supporting evidence in Question 5.');
+      return;
+    }
+
     playAlarm();
-    onSubmitAccusation(suspectTeamId, selectedEvidenceIds, indictmentNotes);
+    onSubmitAccusation(answers);
     onClose();
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
-      <div className="max-w-xl w-full bg-slate-900 border-2 border-rose-500/80 rounded-2xl p-6 shadow-2xl space-y-5 font-mono relative animate-in fade-in zoom-in-95 duration-200">
+    <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3 md:p-6 overflow-y-auto">
+      <div className="max-w-2xl w-full bg-slate-900 border border-rose-600/80 rounded-2xl p-5 md:p-6 shadow-2xl space-y-4 font-mono relative my-auto animate-in fade-in duration-200">
         
         {/* Close Button */}
         <button
@@ -50,99 +131,96 @@ export default function AccusationModal({
           <X className="w-5 h-5" />
         </button>
 
+        {/* Minimal Header */}
         <div className="flex items-center gap-3 border-b border-slate-800 pb-3">
-          <div className="w-10 h-10 rounded-xl bg-rose-950 border border-rose-600 flex items-center justify-center text-rose-400">
+          <div className="w-9 h-9 rounded-xl bg-rose-950 border border-rose-600 flex items-center justify-center text-rose-400 shrink-0">
             <ShieldAlert className="w-5 h-5" />
           </div>
           <div>
-            <span className="text-[10px] text-rose-400 font-bold uppercase tracking-widest">
-              Tribunal Indictment Form
-            </span>
-            <h3 className="text-lg font-black text-white">FILE FORMAL HACKER ACCUSATION</h3>
+            <div className="text-[10px] text-rose-400 font-bold uppercase tracking-widest">
+              Tribunal Indictment // Murder of Dr. Adrian Vale
+            </div>
+            <h3 className="text-base font-black text-white">FILE KILLER ACCUSATION</h3>
           </div>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4 text-xs">
-          {/* Select Suspect */}
-          <div>
-            <label className="text-slate-400 block mb-1">Target Squad Under Indictment:</label>
-            <select
-              value={suspectTeamId}
-              onChange={(e) => setSuspectTeamId(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-rose-400 font-bold focus:outline-none"
-            >
-              {allTeams?.filter(t => t.id !== myTeam?.id && !t.isEliminated).map(t => (
-                <option key={t.id} value={t.id}>
-                  {t.id} - {t.name}
-                </option>
-              ))}
-            </select>
+        {errorMsg && (
+          <div className="p-2.5 bg-rose-950/60 border border-rose-800 rounded-lg text-xs text-rose-300">
+            {errorMsg}
           </div>
+        )}
 
-          {/* Select Evidence Pins */}
-          <div>
-            <label className="text-slate-400 block mb-1">Attach Unlocked Forensic Evidence Files:</label>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-40 overflow-y-auto pr-1">
-              {visibleEvidence?.map(ev => {
-                const isSelected = selectedEvidenceIds.includes(ev.id);
-                return (
-                  <div
-                    key={ev.id}
-                    onClick={() => toggleEvidence(ev.id)}
-                    className={`p-2.5 rounded-lg border text-[11px] cursor-pointer transition-all ${
-                      isSelected
-                        ? 'bg-rose-950/40 border-rose-500 text-white font-bold'
-                        : 'bg-slate-950/60 border-slate-800 text-slate-400'
-                    }`}
-                  >
-                    <div className="flex justify-between items-center">
-                      <span>{ev.id} [{ev.attackSignature}]</span>
-                      <span>{ev.timestamp}</span>
-                    </div>
-                    <div className="text-[10px] text-slate-400 mt-1">Origin: {ev.originNodeHint || 'NODE-??'}</div>
-                  </div>
-                );
-              })}
+        <form onSubmit={handleSubmit} className="space-y-4 text-xs max-h-[65vh] overflow-y-auto pr-1">
+          {MCQ_QUESTIONS.map((q) => (
+            <div key={q.id} className="p-3.5 bg-slate-950/70 border border-slate-800 rounded-xl space-y-2">
+              <div className="font-bold text-slate-200 text-xs">
+                {q.number}. {q.question}
+              </div>
+
+              <div className="grid grid-cols-1 gap-1.5 pt-1">
+                {q.type === 'single' ? (
+                  q.options.map(opt => {
+                    const isSelected = answers[q.id] === opt.key;
+                    return (
+                      <button
+                        type="button"
+                        key={opt.key}
+                        onClick={() => handleSelectSingle(q.id, opt.key)}
+                        className={`text-left p-2.5 rounded-lg border transition-all flex items-center gap-2.5 cursor-pointer text-xs ${
+                          isSelected
+                            ? 'bg-rose-950/50 border-rose-500 text-white font-bold'
+                            : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700'
+                        }`}
+                      >
+                        <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold border shrink-0 ${
+                          isSelected ? 'bg-rose-600 text-white border-rose-400' : 'border-slate-700 text-slate-400'
+                        }`}>
+                          {opt.key}
+                        </span>
+                        <span className="flex-1">{opt.label}</span>
+                      </button>
+                    );
+                  })
+                ) : (
+                  q.options.map(opt => {
+                    const isSelected = answers.q5?.includes(opt.key);
+                    return (
+                      <button
+                        type="button"
+                        key={opt.key}
+                        onClick={() => handleToggleMulti(opt.key)}
+                        className={`text-left p-2.5 rounded-lg border transition-all flex items-center gap-2.5 cursor-pointer text-xs ${
+                          isSelected
+                            ? 'bg-rose-950/50 border-rose-500 text-white font-bold'
+                            : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700'
+                        }`}
+                      >
+                        <span className={`w-5 h-5 rounded flex items-center justify-center text-[10px] font-bold border shrink-0 ${
+                          isSelected ? 'bg-rose-600 text-white border-rose-400' : 'border-slate-700 text-slate-400'
+                        }`}>
+                          {isSelected ? '✓' : opt.key}
+                        </span>
+                        <span className="flex-1">{opt.label}</span>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
             </div>
-          </div>
+          ))}
 
-          {/* Statement */}
-          <div>
-            <label className="text-slate-400 block mb-1">Indictment Rationale & Forensic Justification:</label>
-            <textarea
-              rows={3}
-              value={indictmentNotes}
-              onChange={(e) => setIndictmentNotes(e.target.value)}
-              placeholder="e.g. Timestamp correlation matches unauthorized session tamper on sector C07. Ingress signature coincides with node telemetry."
-              className="w-full bg-slate-950 border border-slate-700 rounded-lg p-3 text-xs text-slate-200 focus:outline-none focus:border-rose-500"
-            />
-          </div>
-
-          {/* Calculated Confidence */}
-          <div className="flex items-center justify-between p-3 bg-slate-950 rounded-lg border border-slate-800 text-xs">
-            <span className="text-slate-400">Estimated Case Confidence:</span>
-            <span className="text-emerald-400 font-bold font-mono">{calculateConfidence()}%</span>
-          </div>
-
-          <div className="p-3 bg-amber-950/30 border border-amber-900/60 rounded-lg text-[11px] text-amber-300 flex items-start gap-2">
-            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-400" />
-            <div>
-              <span className="font-bold">CAUTION:</span> False accusations carry a severe <span className="text-rose-400 font-bold">-100 PTS</span> penalty.
-              The accused will receive 45 seconds to submit their defense to the tribunal.
-            </div>
-          </div>
-
-          <div className="flex justify-end gap-2 pt-2">
+          {/* Action buttons */}
+          <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800 sticky bottom-0 bg-slate-900/90 py-2">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg cursor-pointer"
+              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg cursor-pointer text-xs"
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="px-6 py-2 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-lg uppercase tracking-wider shadow-lg shadow-rose-950 flex items-center gap-2 cursor-pointer"
+              className="px-6 py-2 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-bold rounded-lg uppercase tracking-wider text-xs shadow-lg shadow-rose-950 flex items-center gap-2 cursor-pointer"
             >
               <Send className="w-3.5 h-3.5" />
               Submit Accusation

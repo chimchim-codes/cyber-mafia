@@ -49,6 +49,13 @@ app.get('/api/state', (req, res) => {
   res.json(gameEngine.getClientState(null, true));
 });
 
+// Endpoint to write timestamp to desktop
+app.post('/api/record-timestamp', (req, res) => {
+  const { teamName, teamId, answers, score, isSolved } = req.body || {};
+  const result = gameEngine.writeDesktopTimestamp(teamName, teamId, answers || {}, score || 0, !!isSolved);
+  res.json({ success: true, result });
+});
+
 // Serve frontend build if available
 const clientDistPath = path.join(__dirname, '../client/dist');
 app.use(express.static(clientDistPath));

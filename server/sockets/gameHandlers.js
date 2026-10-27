@@ -81,13 +81,31 @@ function setupSocketHandlers(io, gameEngine) {
       socket.emit('ctf_lab_result', result);
     });
 
-    // File Accusation
-    socket.on('submit_accusation', ({ suspectTeamId, attachedEvidenceIds, notes }) => {
+    // Request Location Hint (Max 1 per location, 3 per whole game)
+    socket.on('request_location_hint', ({ locationId }) => {
       const teamId = socket.data.teamId;
-      const result = gameEngine.submitAccusation(teamId, suspectTeamId, attachedEvidenceIds, notes);
-      if (!result.success) {
-        socket.emit('action_error', { message: result.message });
+      const result = gameEngine.requestLocationHint(teamId, locationId);
+      socket.emit('location_hint_result', result);
+    });
+
+    // File MCQ Accusation
+    socket.on('submit_accusation', (payload) => {
+      const teamId = socket.data.teamId;
+      let result;
+      if (payload && payload.answers) {
+        result = gameEngine.submitMCQAccusation(teamId, payload.answers);
+      } else if (payload && (payload.q1 || payload.q2)) {
+        result = gameEngine.submitMCQAccusation(teamId, payload);
+      } else {
+        result = gameEngine.submitAccusation(teamId, payload?.suspectTeamId, payload?.attachedEvidenceIds, payload?.notes);
       }
+      socket.emit('accusation_verdict', result);
+    });
+
+    socket.on('submit_mcq_accusation', ({ answers }) => {
+      const teamId = socket.data.teamId;
+      const result = gameEngine.submitMCQAccusation(teamId, answers);
+      socket.emit('accusation_verdict', result);
     });
 
     // Submit Defense Statement
