@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Terminal, Lock, CheckCircle2, Play, RotateCcw, 
-  HelpCircle, ArrowRight, ShieldAlert, Cpu, Sparkles 
+  HelpCircle, ArrowRight, ShieldAlert, Cpu, Sparkles, Check, AlertCircle
 } from 'lucide-react';
 import { playClick, playSuccess, playError } from '../utils/soundEffects';
 import { executePythonCode } from '../utils/pythonRunner';
@@ -29,9 +29,15 @@ export default function CivilianCTFLab({
 
   const activeChallenge = challenges?.find(c => c.id === selectedChallengeId) || challenges?.[0];
 
-  // Code editor state per challenge with localStorage persistence
+  // Code editor state per challenge with localStorage persistence and cache versioning
   const [codeBuffers, setCodeBuffers] = useState(() => {
     try {
+      const version = localStorage.getItem('cyber_mafia_code_version');
+      if (version !== '2.0') {
+        localStorage.removeItem('cyber_mafia_code_buffers');
+        localStorage.setItem('cyber_mafia_code_version', '2.0');
+        return {};
+      }
       const saved = localStorage.getItem('cyber_mafia_code_buffers');
       return saved ? JSON.parse(saved) : {};
     } catch {
@@ -57,8 +63,8 @@ export default function CivilianCTFLab({
     }
   });
 
-  const [answerInput, setAnswerInput] = useState('');
   const [feedback, setFeedback] = useState(null);
+  const [isRunning, setIsRunning] = useState(false);
 
   // Sync codeBuffers to localStorage
   useEffect(() => {
@@ -93,7 +99,6 @@ export default function CivilianCTFLab({
 
   const activeTerminalOutput = terminalOutputs[activeChallenge?.id] || '';
 
-  const isCurrentActiveStage = activeChallenge?.stageNumber === currentStage;
   const isCompleted = completedStages?.includes(activeChallenge?.stageNumber) || activeChallenge?.isSolved;
   const isLocked = activeChallenge?.stageNumber > currentStage;
 
@@ -106,47 +111,53 @@ export default function CivilianCTFLab({
     playClick();
     if (activeChallenge) {
       setCodeBuffers(prev => ({ ...prev, [activeChallenge.id]: activeChallenge.initialCode }));
-      setTerminalOutputs(prev => ({ ...prev, [activeChallenge.id]: 'Code reset to initial starter template.' }));
+      setTerminalOutputs(prev => ({ ...prev, [activeChallenge.id]: '> Code reset to fresh starter template.' }));
+      setFeedback(null);
     }
   };
 
   const handleRunCode = () => {
     playClick();
-    if (!activeChallenge) return;
+    if (!activeChallenge || isRunning) return;
+    setIsRunning(true);
 
-    const res = executePythonCode(activeCode, activeChallenge.id);
-    setTerminalOutputs(prev => ({
-      ...prev,
-      [activeChallenge.id]: res.output || (res.success ? 'Program finished with 0 output.' : 'Execution failed.')
-    }));
+    try {
+      const res = executePythonCode(activeCode, activeChallenge.id, activeChallenge);
 
-    if (res.result) {
-      setAnswerInput(res.result);
-      playSuccess();
+      setTerminalOutputs(prev => ({
+        ...prev,
+        [activeChallenge.id]: res.output
+      }));
+
+      if (res.isVerified) {
+        playSuccess();
+        setSubmittedAnswers(prev => ({ ...prev, [activeChallenge.id]: res.result }));
+        setFeedback({
+          type: 'SUCCESS',
+          message: `Stage ${activeChallenge.stageNumber} Verified! +${activeChallenge.rewardScore} PTS awarded. Evidence batch unlocked!`
+        });
+
+        // Trigger authoritative backend solve action
+        onSolveChallenge(activeChallenge.id, res.result, activeChallenge.stageNumber);
+      } else {
+        playError();
+        setFeedback({
+          type: 'ERROR',
+          message: res.feedback || 'Code executed, but output does not match the required forensic solution.'
+        });
+      }
+    } finally {
+      setIsRunning(false);
     }
   };
 
-  const handleSubmitSolution = (e) => {
-    e?.preventDefault();
-    if (!activeChallenge || !answerInput.trim()) return;
-
+  const handleProceedToNext = () => {
     playClick();
-    const cleanAnswer = answerInput.trim();
-    
-    // Check against expected or alternatives
-    const isExpected = cleanAnswer.toLowerCase() === activeChallenge.expected.toLowerCase();
-    const isAlternative = activeChallenge.acceptedAlternatives?.some(
-      alt => alt.toLowerCase() === cleanAnswer.toLowerCase()
-    );
-
-    if (isExpected || isAlternative) {
-      setSubmittedAnswers(prev => ({ ...prev, [activeChallenge.id]: cleanAnswer }));
-      onSolveChallenge(activeChallenge.id, cleanAnswer, activeChallenge.stageNumber);
-      setFeedback({ type: 'SUCCESS', message: `Stage ${activeChallenge.stageNumber} Solved! +${activeChallenge.rewardScore} PTS. Evidence batch unlocked!` });
-      setAnswerInput('');
-    } else {
-      playError();
-      setFeedback({ type: 'ERROR', message: `Output "${cleanAnswer}" is incorrect. Verify your code and try again.` });
+    const nextStageNum = (activeChallenge?.stageNumber || 1) + 1;
+    const nextChal = challenges?.find(c => c.stageNumber === nextStageNum);
+    if (nextChal) {
+      setSelectedChallengeId(nextChal.id);
+      setFeedback(null);
     }
   };
 
@@ -163,7 +174,7 @@ export default function CivilianCTFLab({
             Sequential Cyber Forensic Challenges
           </h3>
           <p className="text-[11px] text-slate-400">
-            Write and execute Python code in-game to analyze digital evidence and unlock restricted document batches.
+            Write authentic Python code to extract forensic signatures. Code must execute correctly to unlock the next level.
           </p>
         </div>
 
@@ -203,7 +214,6 @@ export default function CivilianCTFLab({
                 playClick();
                 setSelectedChallengeId(chal.id);
                 setFeedback(null);
-                setAnswerInput('');
               }}
               className={`p-2.5 rounded-xl border text-left transition-all relative flex flex-col justify-between ${
                 isSelected
@@ -211,7 +221,7 @@ export default function CivilianCTFLab({
                   : isSolved
                   ? 'bg-emerald-950/20 border-emerald-800/80 text-emerald-300'
                   : locked
-                  ? 'bg-slate-950/40 border-slate-900 text-slate-600 cursor-not-allowed'
+                  ? 'bg-slate-950/40 border-slate-900 text-slate-600 cursor-not-allowed opacity-60'
                   : 'bg-slate-950/70 border-slate-800 text-slate-400 hover:border-slate-700 cursor-pointer'
               }`}
             >
@@ -225,7 +235,7 @@ export default function CivilianCTFLab({
                   <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
                 )}
               </div>
-              <div className="text-[11px] truncate">{chal.title}</div>
+              <div className="text-[11px] truncate font-medium">{chal.title}</div>
             </button>
           );
         })}
@@ -295,49 +305,68 @@ export default function CivilianCTFLab({
               )}
             </div>
 
-            {/* Output Submission Box */}
+            {/* Objective Status Card */}
             <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-3">
               <div className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
                 <Terminal className="w-3.5 h-3.5 text-cyan-400" />
-                Submit Challenge Output:
+                Stage Objective Verification:
               </div>
 
               {isCompleted ? (
-                <div className="p-3 bg-emerald-950/30 border border-emerald-800 rounded-lg text-xs text-emerald-300 space-y-1">
+                <div className="p-3 bg-emerald-950/40 border border-emerald-800/80 rounded-lg text-xs text-emerald-300 space-y-2">
                   <div className="flex items-center gap-2">
                     <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                    <span className="font-bold">Stage {activeChallenge.stageNumber} Completed! Solution verified.</span>
+                    <span className="font-bold">Stage {activeChallenge.stageNumber} Completed! Verified via Code Execution.</span>
                   </div>
                   {submittedAnswers[activeChallenge.id] && (
                     <div className="text-[11px] text-emerald-300/90 pl-6 font-mono">
-                      Submitted Output: <span className="bg-emerald-900/60 px-1.5 py-0.5 rounded border border-emerald-700/60 font-bold">{submittedAnswers[activeChallenge.id]}</span>
+                      Verified Output: <span className="bg-emerald-900/60 px-1.5 py-0.5 rounded border border-emerald-700/60 font-bold">{submittedAnswers[activeChallenge.id]}</span>
                     </div>
+                  )}
+
+                  {activeChallenge.stageNumber < 5 && (
+                    <button
+                      type="button"
+                      onClick={handleProceedToNext}
+                      className="w-full mt-2 py-2 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white font-bold rounded-lg text-xs uppercase tracking-wider shadow-md shadow-emerald-950 flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <span>Proceed to Stage {activeChallenge.stageNumber + 1}</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
                   )}
                 </div>
               ) : (
-                <form onSubmit={handleSubmitSolution} className="space-y-2">
-                  <input
-                    type="text"
-                    value={answerInput}
-                    onChange={(e) => setAnswerInput(e.target.value)}
-                    placeholder="Enter output string or run code above..."
-                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-cyan-500 font-mono"
-                  />
+                <div className="space-y-3">
+                  <div className="text-[11px] text-slate-400 leading-relaxed bg-slate-900/50 p-3 rounded-lg border border-slate-800">
+                    <div className="font-bold text-cyan-300 mb-1 flex items-center gap-1">
+                      <Cpu className="w-3 h-3" /> Execution & Progression Rule:
+                    </div>
+                    Write your Python solution in the workspace on the right and click <span className="text-emerald-400 font-bold">Run & Verify Code</span>.
+                    The next level unlocks <span className="text-slate-200 font-bold">only</span> when your code executes through the proper logic and outputs the matching solution.
+                  </div>
+
                   <button
-                    type="submit"
-                    className="w-full py-2 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-bold rounded-lg text-xs uppercase tracking-wider shadow-md shadow-cyan-950 flex items-center justify-center gap-1.5 cursor-pointer"
+                    type="button"
+                    disabled={isRunning}
+                    onClick={handleRunCode}
+                    className="w-full py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold rounded-lg text-xs uppercase tracking-wider shadow-md shadow-emerald-950 flex items-center justify-center gap-2 cursor-pointer transition-all disabled:opacity-50"
                   >
-                    <ArrowRight className="w-3.5 h-3.5" />
-                    Submit Output & Unlock Evidence
+                    <Play className="w-3.5 h-3.5 fill-white" />
+                    <span>{isRunning ? 'Executing Script...' : 'Run & Verify Python Code'}</span>
                   </button>
-                </form>
+                </div>
               )}
 
               {feedback && (
-                <div className={`p-2.5 rounded-lg border text-xs font-mono ${
+                <div className={`p-2.5 rounded-lg border text-xs font-mono flex items-start gap-2 ${
                   feedback.type === 'SUCCESS' ? 'bg-emerald-950/50 border-emerald-600 text-emerald-300' : 'bg-rose-950/50 border-rose-600 text-rose-300'
                 }`}>
-                  {feedback.message}
+                  {feedback.type === 'SUCCESS' ? (
+                    <Check className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                  ) : (
+                    <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  )}
+                  <span>{feedback.message}</span>
                 </div>
               )}
             </div>
@@ -360,16 +389,17 @@ export default function CivilianCTFLab({
                     type="button"
                     onClick={handleResetCode}
                     className="text-[11px] text-slate-400 hover:text-slate-200 flex items-center gap-1 cursor-pointer"
-                    title="Reset to starter template"
+                    title="Reset to fresh starter template"
                   >
                     <RotateCcw className="w-3 h-3" /> Reset
                   </button>
                   <button
                     type="button"
+                    disabled={isRunning}
                     onClick={handleRunCode}
-                    className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded text-xs flex items-center gap-1 cursor-pointer shadow-md shadow-emerald-950"
+                    className="px-3.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded text-xs flex items-center gap-1.5 cursor-pointer shadow-md shadow-emerald-950 disabled:opacity-50"
                   >
-                    <Play className="w-3 h-3 fill-white" /> Run Code
+                    <Play className="w-3 h-3 fill-white" /> Run & Verify
                   </button>
                 </div>
               </div>
@@ -377,8 +407,9 @@ export default function CivilianCTFLab({
               <textarea
                 value={activeCode}
                 onChange={handleCodeChange}
-                rows={14}
+                rows={15}
                 spellCheck={false}
+                placeholder="Write your Python code here..."
                 className="w-full bg-[#0a0f1d] text-cyan-200 font-mono text-xs p-3.5 focus:outline-none resize-none leading-relaxed"
               />
             </div>
@@ -388,31 +419,14 @@ export default function CivilianCTFLab({
               <div className="flex items-center justify-between text-slate-500 border-b border-slate-900 pb-1 text-[10px]">
                 <span className="flex items-center gap-1">
                   <Terminal className="w-3 h-3 text-cyan-400" />
-                  TERMINAL STDOUT (Python 3.11.4 Virtual Subshell)
+                  TERMINAL STDOUT (Python 3.11 Virtual Subshell)
                 </span>
-                <span>Exit Code: 0</span>
+                <span>Authoritative Sandbox</span>
               </div>
 
-              <pre className="p-2.5 bg-black/80 rounded-lg text-emerald-400 text-xs overflow-x-auto min-h-[70px] whitespace-pre-wrap">
-                {activeTerminalOutput || '> Click "Run Code" above to execute your Python script and inspect stdout output.'}
+              <pre className="p-2.5 bg-black/90 rounded-lg text-emerald-400 text-xs overflow-x-auto min-h-[85px] whitespace-pre-wrap font-mono">
+                {activeTerminalOutput || '> Click "Run & Verify" above to execute your Python script and inspect stdout output.'}
               </pre>
-
-              {activeTerminalOutput && !isCompleted && (
-                <div className="flex justify-end pt-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      playClick();
-                      const lines = activeTerminalOutput.trim().split('\n');
-                      const lastLine = lines[lines.length - 1];
-                      if (lastLine) setAnswerInput(lastLine.trim());
-                    }}
-                    className="text-[11px] text-cyan-400 hover:text-cyan-300 underline cursor-pointer"
-                  >
-                    Copy Output to Answer Field ↑
-                  </button>
-                </div>
-              )}
             </div>
           </div>
         </div>

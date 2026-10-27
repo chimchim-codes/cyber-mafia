@@ -1,137 +1,461 @@
 // client/src/utils/pythonRunner.js
-// Safe in-browser Python execution simulator for the 5 False Trials coding challenges
+// Safe in-browser Python execution simulator & forensic validator for the 5 False Trials coding challenges
 
-export function executePythonCode(code, challengeId) {
+/**
+ * Transpiles Python 3 code into executable JavaScript for the sandboxed runner.
+ */
+export function transpilePython(code) {
+  // Pre-process: convert python tuples (a, b) not preceded by function calls to JS arrays [a, b]
+  let preprocessed = code.replace(
+    /(?<![a-zA-Z0-9_])\(\s*("[^"]*?"|\x27[^\x27]*?\x27|\d+)\s*,\s*("[^"]*?"|\x27[^\x27]*?\x27|\d+)\s*\)/g,
+    "[$1, $2]"
+  );
+
+  const lines = preprocessed.split(/\r?\n/);
+  const jsLines = [];
+  const indentStack = [0];
+  const assignedVars = new Set();
+  let openBrackets = 0;
+
+  function replaceComprehensions(str) {
+    let idx = 0;
+    while ((idx = str.indexOf("[", idx)) !== -1) {
+      let depth = 1;
+      let end = idx + 1;
+      while (end < str.length && depth > 0) {
+        if (str[end] === "[") depth++;
+        else if (str[end] === "]") depth--;
+        end++;
+      }
+      if (depth === 0) {
+        const inner = str.slice(idx + 1, end - 1);
+        const match = inner.match(/^([\s\S]+?)\s+for\s+([a-zA-Z0-9_,\s]+?)\s+in\s+([\s\S]+?)$/);
+        if (match) {
+          const exp = match[1].trim();
+          const vars = match[2].trim();
+          const rest = match[3].trim();
+          const v = vars.includes(",") ? `[${vars}]` : vars;
+          let iter = rest;
+          let cond = null;
+          const ifIdx = rest.lastIndexOf(" if ");
+          if (ifIdx !== -1) {
+            iter = rest.slice(0, ifIdx).trim();
+            cond = rest.slice(ifIdx + 4).trim();
+          }
+          let replacement = "";
+          if (cond) {
+            replacement = `(${transformExpr(iter)}).filter((${v}) => (${transformExpr(cond)})).map((${v}) => (${transformExpr(exp)}))`;
+          } else {
+            replacement = `(${transformExpr(iter)}).map((${v}) => (${transformExpr(exp)}))`;
+          }
+          str = str.slice(0, idx) + replacement + str.slice(end);
+          idx += replacement.length;
+          continue;
+        }
+      }
+      idx++;
+    }
+    return str;
+  }
+
+  function transformExpr(expr) {
+    let res = replaceComprehensions(expr);
+
+    // Python lambdas
+    res = res.replace(/key\s*=\s*lambda\s+([a-zA-Z0-9_]+):\s*([^,)]+)/g, "((__item) => { const $1 = __item; return $2; })");
+    res = res.replace(/\blambda\s+([a-zA-Z0-9_,\s]+):\s*([^,)]+)/g, "(($1) => $2)");
+
+    // In / not in operators with support for identifiers and bracketed arrays
+    res = res.replace(/([a-zA-Z0-9_".\-\[\]]+)\s+not\s+in\s+(\[[^\]]*\]|[a-zA-Z0-9_".\-\[\]]+)/g, "!__py_in($1, $2)");
+    res = res.replace(/([a-zA-Z0-9_".\-\[\]]+)\s+in\s+(\[[^\]]*\]|[a-zA-Z0-9_".\-\[\]]+)/g, "__py_in($1, $2)");
+
+    // Boolean operators & literals
+    res = res
+      .replace(/\band\b/g, "&&")
+      .replace(/\bor\b/g, "||")
+      .replace(/\bnot\b/g, "!")
+      .replace(/\bTrue\b/g, "true")
+      .replace(/\bFalse\b/g, "false")
+      .replace(/\bNone\b/g, "null");
+
+    // Negative indexing: arr[-1] -> arr.at(-1)
+    res = res.replace(/\[\s*-\s*(\d+)\s*\]/g, ".at(-$1)");
+
+    return res;
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i];
+    const trimmed = rawLine.trim();
+
+    if (!trimmed || trimmed.startsWith("#")) {
+      jsLines.push(trimmed.startsWith("#") ? "// " + trimmed.slice(1) : "");
+      continue;
+    }
+
+    const indent = rawLine.search(/\S/);
+
+    // Emit closing braces when dedenting
+    if (openBrackets === 0) {
+      while (indent < indentStack[indentStack.length - 1]) {
+        indentStack.pop();
+        jsLines.push(" ".repeat(indentStack[indentStack.length - 1]) + "}");
+      }
+    }
+
+    let line = trimmed;
+
+    // Track brackets count across multi-line definitions
+    for (const ch of line) {
+      if (ch === "[" || ch === "{" || ch === "(") openBrackets++;
+      else if (ch === "]" || ch === "}" || ch === ")") openBrackets = Math.max(0, openBrackets - 1);
+    }
+
+    // Detect LHS variable assignments to pre-declare with var
+    const assignMatch = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*(?:\s*,\s*[a-zA-Z_][a-zA-Z0-9_]*)*)\s*=[^=]/);
+    if (assignMatch && openBrackets === 0) {
+      const vars = assignMatch[1].split(",").map(v => v.trim());
+      vars.forEach(v => {
+        if (!v.includes("[") && !v.includes(".")) assignedVars.add(v);
+      });
+    }
+
+    // Function definition: def name(args):
+    if (line.startsWith("def ")) {
+      line = line.replace(/^def\s+([a-zA-Z0-9_]+)\s*\((.*?)\):$/, "function $1($2) {");
+      indentStack.push(indent + 4);
+      jsLines.push(" ".repeat(indent) + line);
+      continue;
+    }
+
+    // For loop: for var in iter:
+    if (line.startsWith("for ")) {
+      const forMatch = line.match(/^for\s+(.+?)\s+in\s+(.+?):$/);
+      if (forMatch) {
+        const target = forMatch[1].trim();
+        const iterable = transformExpr(forMatch[2].trim());
+        const loopVar = target.includes(",") ? `[${target}]` : target;
+        line = `for (let ${loopVar} of (${iterable})) {`;
+        indentStack.push(indent + 4);
+        jsLines.push(" ".repeat(indent) + line);
+        continue;
+      }
+    }
+
+    // Conditionals: if, elif, else
+    if (line.startsWith("if ")) {
+      const cond = transformExpr(line.slice(3, -1).trim());
+      line = `if (${cond}) {`;
+      indentStack.push(indent + 4);
+      jsLines.push(" ".repeat(indent) + line);
+      continue;
+    } else if (line.startsWith("elif ")) {
+      const cond = transformExpr(line.slice(5, -1).trim());
+      line = `else if (${cond}) {`;
+      indentStack.push(indent + 4);
+      jsLines.push(" ".repeat(indent) + line);
+      continue;
+    } else if (line === "else:") {
+      line = `else {`;
+      indentStack.push(indent + 4);
+      jsLines.push(" ".repeat(indent) + line);
+      continue;
+    }
+
+    // While loop: while cond:
+    if (line.startsWith("while ")) {
+      const cond = transformExpr(line.slice(6, -1).trim());
+      line = `while (${cond}) {`;
+      indentStack.push(indent + 4);
+      jsLines.push(" ".repeat(indent) + line);
+      continue;
+    }
+
+    // Pass statement
+    if (line === "pass") {
+      jsLines.push(" ".repeat(indent) + "/* pass */;");
+      continue;
+    }
+
+    line = transformExpr(line);
+
+    // Semicolon insertion
+    const endsWithOpen = /[,\[\{\(]$/.test(line);
+    const semicolon = (openBrackets > 0 || endsWithOpen || line.endsWith("{") || line.endsWith("}")) ? "" : ";";
+
+    jsLines.push(" ".repeat(indent) + line + semicolon);
+  }
+
+  // Close remaining open indentation blocks
+  while (indentStack.length > 1) {
+    indentStack.pop();
+    jsLines.push(" ".repeat(indentStack[indentStack.length - 1]) + "}");
+  }
+
+  const varDeclarations = assignedVars.size > 0 ? `var ${Array.from(assignedVars).join(", ")};\n` : "";
+  return varDeclarations + jsLines.join("\n");
+}
+
+/**
+ * Validates that the solution was achieved through the proper coding logic,
+ * rather than hardcoding the expected string directly.
+ */
+function verifyProperForensicLogic(code, challengeId, cleanOutput) {
+  const normalized = code.toLowerCase();
+
+  if (challengeId === 'CHAL-PY-1') {
+    // Challenge 1: Find the Bypass Key
+    // Must parse from header using string methods
+    const usesHeader = normalized.includes('header') || normalized.includes('x-bypass-key');
+    const usesStringOps = normalized.includes('split') || 
+                          normalized.includes('find') || 
+                          normalized.includes('index') || 
+                          normalized.includes('replace') || 
+                          normalized.includes('splitlines') ||
+                          normalized.includes('slice') ||
+                          normalized.includes('re.') ||
+                          normalized.includes('[');
+
+    if (!usesHeader || !usesStringOps) {
+      return {
+        valid: false,
+        reason: "Bypass detected: Please extract the key dynamically from the 'header' string using string methods (.split()) instead of hardcoding."
+      };
+    }
+  }
+
+  if (challengeId === 'CHAL-PY-2') {
+    // Challenge 2: Identify the Suspicious Login
+    // Must examine login_records for status == "FAILED"
+    const usesRecords = normalized.includes('login_records');
+    const checksFailed = normalized.includes('failed');
+    const usesIteration = normalized.includes('for ') || normalized.includes('while ') || normalized.includes('filter') || normalized.includes('[');
+
+    if (!usesRecords || !checksFailed || !usesIteration) {
+      return {
+        valid: false,
+        reason: "Bypass detected: Please loop through 'login_records' and check for the 'FAILED' status instead of hardcoding the username."
+      };
+    }
+  }
+
+  if (challengeId === 'CHAL-PY-3') {
+    // Challenge 3: Find the Impostor
+    // Must check membership between logged_users and authorized_users
+    const usesLists = normalized.includes('logged_users') && normalized.includes('authorized_users');
+    const usesMembership = normalized.includes('not in') || normalized.includes('in ') || normalized.includes('set') || normalized.includes('filter') || normalized.includes('difference');
+
+    if (!usesLists || !usesMembership) {
+      return {
+        valid: false,
+        reason: "Bypass detected: Please cross-reference 'logged_users' against 'authorized_users' with a membership check (e.g. 'not in') instead of hardcoding."
+      };
+    }
+  }
+
+  if (challengeId === 'CHAL-PY-4') {
+    // Challenge 4: Crack the Access Rule
+    // Must define/use check_access and verify both conditions
+    const hasAccessRule = normalized.includes('check_access');
+    const hasDualCondition = normalized.includes('and') || normalized.includes('&&') || (normalized.includes('authorized_users') && normalized.includes('valid_code'));
+
+    if (!hasAccessRule || !hasDualCondition) {
+      return {
+        valid: false,
+        reason: "Bypass detected: Please implement and evaluate check_access() using dual-condition boolean logic instead of hardcoding."
+      };
+    }
+  }
+
+  if (challengeId === 'CHAL-PY-5') {
+    // Challenge 5: Server Access Investigation
+    // Must filter auth_logs on status == 200 and select latest timestamp
+    const usesLogs = normalized.includes('auth_logs');
+    const checks200 = normalized.includes('200');
+    const findsLatest = normalized.includes('max') || normalized.includes('sort') || normalized.includes('timestamp') || normalized.includes('>') || normalized.includes('[-1]');
+
+    if (!usesLogs || !checks200 || !findsLatest) {
+      return {
+        valid: false,
+        reason: "Bypass detected: Please filter 'auth_logs' for status == 200 and identify the latest timestamp instead of hardcoding."
+      };
+    }
+  }
+
+  return { valid: true };
+}
+
+/**
+ * Executes user Python code safely and validates the result.
+ */
+export function executePythonCode(code, challengeId, challengeMeta = null) {
   const outputLines = [];
-  const log = (...args) => {
-    outputLines.push(args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' '));
+  const print = (...args) => {
+    outputLines.push(
+      args.map(a => (typeof a === 'object' && a !== null ? JSON.stringify(a) : String(a))).join(' ')
+    );
   };
 
+  const __py_in = (item, container) => {
+    if (!container) return false;
+    if (Array.isArray(container) || typeof container === 'string') return container.includes(item);
+    if (container instanceof Set) return container.has(item);
+    return item in container;
+  };
+
+  const len = (x) => x?.length ?? x?.size ?? 0;
+
+  const max = (arr, keyFn) => {
+    if (!arr || arr.length === 0) return null;
+    const fn = typeof keyFn === 'function' ? keyFn : (x => x);
+    let best = arr[0];
+    let bestVal = fn(best);
+    for (let i = 1; i < arr.length; i++) {
+      const v = fn(arr[i]);
+      if (v > bestVal) {
+        best = arr[i];
+        bestVal = v;
+      }
+    }
+    return best;
+  };
+
+  const min = (arr, keyFn) => {
+    if (!arr || arr.length === 0) return null;
+    const fn = typeof keyFn === 'function' ? keyFn : (x => x);
+    let best = arr[0];
+    let bestVal = fn(best);
+    for (let i = 1; i < arr.length; i++) {
+      const v = fn(arr[i]);
+      if (v < bestVal) {
+        best = arr[i];
+        bestVal = v;
+      }
+    }
+    return best;
+  };
+
+  // Safe prototype extensions
+  if (typeof String.prototype.startswith !== 'function') {
+    String.prototype.startswith = String.prototype.startsWith;
+  }
+  if (typeof String.prototype.endswith !== 'function') {
+    String.prototype.endswith = String.prototype.endsWith;
+  }
+  if (typeof String.prototype.splitlines !== 'function') {
+    String.prototype.splitlines = function() { return this.split(/\r?\n/); };
+  }
+  if (typeof Array.prototype.append !== 'function') {
+    Array.prototype.append = Array.prototype.push;
+  }
+
+  const trimmed = (code || '').trim();
+
+  // Basic check for empty or comment-only code
+  const codeLines = trimmed.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+  if (codeLines.length === 0) {
+    return {
+      success: false,
+      isVerified: false,
+      output: '> No executable code found. Write your Python solution and click Run Code.',
+      result: null,
+      error: 'Empty code buffer',
+      feedback: 'Please write your solution in the editor before running.'
+    };
+  }
+
   try {
-    const trimmed = code.trim();
+    const fullJs = transpilePython(code);
+    const runner = new Function('print', '__py_in', 'len', 'max', 'min', fullJs);
+    runner(print, __py_in, len, max, min);
 
-    // Check challenge-specific solutions and executions
-    if (challengeId === 'CHAL-PY-1') {
-      // Find the Bypass Key
-      const rawHeader = "Host: sec.local\r\nX-Bypass-Key: BYPASS-ELENA-WARD-99\r\nUser-Agent: Terminal/1.0";
-      
-      // Look for custom split / regex / print pattern in code
-      if (trimmed.includes("print(")) {
-        // Execute logic
-        const headerMatch = rawHeader.match(/X-Bypass-Key:\s*([^\r\n]+)/i);
-        const extracted = headerMatch ? headerMatch[1].trim() : 'BYPASS-ELENA-WARD-99';
-        
-        // If code explicitly prints a variable or extraction
-        if (trimmed.includes("BYPASS-ELENA-WARD") || trimmed.includes("split") || trimmed.includes("X-Bypass-Key")) {
-          log(extracted);
-        } else {
-          log(extracted);
-        }
-      } else {
-        log("Code executed successfully with 0 outputs. Add a print() statement to view your result.");
-      }
-      return { success: true, output: outputLines.join('\n'), result: 'BYPASS-ELENA-WARD-99' };
+    const fullStdout = outputLines.join('\n');
+
+    // Extract the most recent non-empty printed line
+    const lastOutputLine = [...outputLines].reverse().find(l => l && l.trim().length > 0) || '';
+    const cleanOutput = lastOutputLine.trim();
+
+    if (!cleanOutput) {
+      return {
+        success: true,
+        isVerified: false,
+        output: outputLines.length > 0 ? fullStdout : '> Process finished with exit code 0 (no output produced).\n> TIP: Use print(...) to output your answer.',
+        result: '',
+        error: null,
+        feedback: 'Your code ran without errors, but did not print an answer. Add a print(...) statement.'
+      };
     }
 
-    if (challengeId === 'CHAL-PY-2') {
-      // Identify the Suspicious Login
-      const logins = [
-        ["mira_sen", "SUCCESS"],
-        ["noah_mercer", "SUCCESS"],
-        ["felix_grant", "SUCCESS"],
-        ["guest_temp", "FAILED"],
-        ["elena_ward", "SUCCESS"]
-      ];
+    // Expected answer verification
+    const expected = challengeMeta?.expected || getExpectedForChallenge(challengeId);
+    const alts = challengeMeta?.acceptedAlternatives || getAlternativesForChallenge(challengeId);
 
-      let found = "";
-      for (const [user, status] of logins) {
-        if (status === "FAILED") {
-          found = user;
-          break;
-        }
-      }
+    const matchesExpected = cleanOutput.toLowerCase() === (expected || '').toLowerCase();
+    const matchesAlternative = alts.some(alt => cleanOutput.toLowerCase() === alt.toLowerCase());
 
-      if (trimmed.includes("print(")) {
-        log(found);
-      } else {
-        log("Code executed. Result found: " + found + " (add print statement to display)");
-      }
-      return { success: true, output: outputLines.join('\n'), result: found };
+    if (!matchesExpected && !matchesAlternative) {
+      return {
+        success: true,
+        isVerified: false,
+        output: fullStdout,
+        result: cleanOutput,
+        error: 'Output mismatch',
+        feedback: `Output "${cleanOutput}" does not match the expected forensic solution. Check your logic.`
+      };
     }
 
-    if (challengeId === 'CHAL-PY-3') {
-      // Find the Impostor
-      const authorized = ["mira_sen", "noah_mercer", "felix_grant", "elena_ward", "adrian_vale"];
-      const logged = ["mira_sen", "felix_grant", "shadow_operator", "elena_ward"];
-
-      let impostor = "";
-      for (const u of logged) {
-        if (!authorized.includes(u)) {
-          impostor = u;
-          break;
-        }
-      }
-
-      if (trimmed.includes("print(")) {
-        log(impostor);
-      } else {
-        log("Code executed. Identified impostor: " + impostor);
-      }
-      return { success: true, output: outputLines.join('\n'), result: impostor };
+    // Verify logic was done through proper way
+    const properWay = verifyProperForensicLogic(code, challengeId, cleanOutput);
+    if (!properWay.valid) {
+      return {
+        success: true,
+        isVerified: false,
+        output: `${fullStdout}\n\n[!] INTEGRITY WARNING: ${properWay.reason}`,
+        result: cleanOutput,
+        error: 'Improper solution logic',
+        feedback: properWay.reason
+      };
     }
 
-    if (challengeId === 'CHAL-PY-4') {
-      // Crack the Access Rule
-      let accessResult = "ACCESS_DENIED";
-      if (
-        (trimmed.includes("elena_ward") || trimmed.includes("authorized_users")) &&
-        (trimmed.includes("SEC-7702") || trimmed.includes("valid_code"))
-      ) {
-        accessResult = "ACCESS_GRANTED";
-      }
-
-      if (trimmed.includes("print(")) {
-        log(accessResult);
-      } else {
-        log("Executed. Access rule evaluation: " + accessResult);
-      }
-      return { success: true, output: outputLines.join('\n'), result: accessResult };
-    }
-
-    if (challengeId === 'CHAL-PY-5') {
-      // Server Access Investigation
-      const authLogs = [
-        { timestamp: "08:12:00", user: "mira_sen", status: 200, ip: "10.0.1.12", msg: "Auth OK - Workstation B" },
-        { timestamp: "08:19:30", user: "noah_mercer", status: 200, ip: "10.0.1.45", msg: "Auth OK - Server Sub-1" },
-        { timestamp: "08:24:10", user: "felix_grant", status: 200, ip: "10.0.2.19", msg: "Auth OK - Security Desk" },
-        { timestamp: "08:31:45", user: "elena_ward", status: 200, ip: "10.0.4.01", msg: "Auth OK - Executive Gateway" },
-        { timestamp: "08:34:10", user: "felix_grant", status: 401, ip: "10.0.2.19", msg: "Auth Failed - Bad Pin" },
-        { timestamp: "08:38:00", user: "mira_sen", status: 403, ip: "10.0.1.12", msg: "Access Denied - Lockdown Active" },
-        { timestamp: "08:42:15", user: "noah_mercer", status: 401, ip: "10.0.1.45", msg: "Auth Failed - Session Terminated" }
-      ];
-
-      // Filter status 200 and find latest timestamp
-      const valid = authLogs.filter(l => l.status === 200);
-      valid.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-      const latest = valid[valid.length - 1];
-
-      if (trimmed.includes("print(")) {
-        log(latest.user);
-      } else {
-        log("Executed. Latest successful user identified: " + latest.user);
-      }
-      return { success: true, output: outputLines.join('\n'), result: latest.user };
-    }
-
-    // Default fallback
-    log("Python 3.11.4 interpreter ready. Process finished with exit code 0.");
-    return { success: true, output: outputLines.join('\n'), result: "" };
+    return {
+      success: true,
+      isVerified: true,
+      output: `${fullStdout}\n\n[✔] FORENSIC MATCH VERIFIED: "${cleanOutput}"\n[✔] Status: Stage objective cleared!`,
+      result: cleanOutput,
+      error: null,
+      feedback: `Objective cleared! Solution verified: "${cleanOutput}".`
+    };
 
   } catch (err) {
     return {
       success: false,
-      output: `Traceback (most recent call last):\n  File "main.py", line 1\nSyntaxError: ${err.message}`,
-      result: null
+      isVerified: false,
+      output: `Traceback (most recent call last):\n  File "solution.py", line 1, in <module>\n${err.name}: ${err.message}`,
+      result: null,
+      error: err.message,
+      feedback: `Execution error: ${err.message}. Please fix the syntax or logic error and run again.`
     };
   }
+}
+
+function getExpectedForChallenge(id) {
+  const map = {
+    'CHAL-PY-1': 'BYPASS-ELENA-WARD-99',
+    'CHAL-PY-2': 'guest_temp',
+    'CHAL-PY-3': 'shadow_operator',
+    'CHAL-PY-4': 'ACCESS_GRANTED',
+    'CHAL-PY-5': 'elena_ward'
+  };
+  return map[id] || '';
+}
+
+function getAlternativesForChallenge(id) {
+  const map = {
+    'CHAL-PY-1': ['BYPASS-ELENA-WARD', 'BYPASS-ELENA-WARD-99'],
+    'CHAL-PY-2': ['guest_temp', '"guest_temp"'],
+    'CHAL-PY-3': ['shadow_operator', '"shadow_operator"'],
+    'CHAL-PY-4': ['ACCESS_GRANTED', '"ACCESS_GRANTED"'],
+    'CHAL-PY-5': ['elena_ward', '"elena_ward"']
+  };
+  return map[id] || [];
 }
