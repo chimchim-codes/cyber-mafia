@@ -18,6 +18,7 @@ import RevealModal from './components/RevealModal';
 import GameChat from './components/GameChat';
 import AdminPanel from './components/AdminPanel';
 import LeaderboardView from './components/LeaderboardView';
+import { generateTribunalAccusationPDF } from './utils/pdfGenerator';
 
 import { 
   INITIAL_SUSPECTS, 
@@ -98,6 +99,15 @@ export default function App() {
   const [securityAlerts, setSecurityAlerts] = useState(() => {
     try {
       const saved = localStorage.getItem('cyber_mafia_security_alerts');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [submissionAlerts, setSubmissionAlerts] = useState(() => {
+    try {
+      const saved = localStorage.getItem('cyber_mafia_submission_alerts');
       return saved ? JSON.parse(saved) : [];
     } catch {
       return [];
@@ -317,13 +327,31 @@ export default function App() {
     socket.on('accusation_verdict', (result) => {
       const verdict = result.revealResult || result;
       setCustomVerdict(verdict);
+      setMyTeam(prev => ({ ...prev, hasSubmittedAccusation: true }));
+      try {
+        generateTribunalAccusationPDF(verdict, myTeam);
+      } catch (err) {
+        console.warn('PDF auto-generation on socket verdict failed:', err);
+      }
       if (result.isSolved) {
         playSuccess();
-        showToast('MURDER SOLVED! Elena Ward convicted!', 'SUCCESS');
+        showToast('MURDER SOLVED! Elena Ward convicted! Case Record PDF downloaded.', 'SUCCESS');
       } else {
         playError();
-        showToast(`Accusation result: ${result.score}/5 correct`, 'ERROR');
+        showToast(`Accusation result: ${result.score}/5 correct. Case Record PDF downloaded.`, 'ERROR');
       }
+    });
+
+    socket.on('admin_submission_alert', (alertData) => {
+      setSubmissionAlerts(prev => {
+        const next = [alertData, ...prev];
+        try {
+          localStorage.setItem('cyber_mafia_submission_alerts', JSON.stringify(next.slice(0, 50)));
+        } catch (e) {}
+        return next;
+      });
+      playAlarm();
+      showToast(`🚨 TEAM ACCUSATION SUBMITTED: ${alertData.teamName || alertData.teamId} scored ${alertData.score}/5 (${alertData.isSolved ? 'SOLVED' : 'INCORRECT'})`, 'ERROR');
     });
 
     socket.on('action_error', ({ message }) => {
@@ -340,6 +368,7 @@ export default function App() {
       socket.off('ctf_lab_result');
       socket.off('location_hint_result');
       socket.off('accusation_verdict');
+      socket.off('admin_submission_alert');
       socket.off('action_error');
     };
   }, []);

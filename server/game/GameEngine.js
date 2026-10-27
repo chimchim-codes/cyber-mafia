@@ -423,6 +423,18 @@ class GameEngine extends EventEmitter {
       (accusingTeamId?.startsWith('S') && t.id === 'C' + accusingTeamId.slice(1))
     ) || this.teams[0];
 
+    // Enforce one-time submission only
+    if (accuser.hasSubmittedAccusation) {
+      return {
+        success: false,
+        alreadySubmitted: true,
+        message: 'Your squad has already submitted an accusation. Only 1 submission is permitted per match.'
+      };
+    }
+
+    accuser.hasSubmittedAccusation = true;
+    accuser.accusationSubmittedAt = new Date().toISOString();
+
     const isQ1 = answers?.q1 === 'D';
     const isQ2 = answers?.q2 === 'A';
     const isQ3 = answers?.q3 === 'B';
@@ -432,8 +444,19 @@ class GameEngine extends EventEmitter {
 
     const score = (isQ1 ? 1 : 0) + (isQ2 ? 1 : 0) + (isQ3 ? 1 : 0) + (isQ4 ? 1 : 0) + (isQ5 ? 1 : 0);
     const isSolved = isQ1 && isQ2 && isQ3 && isQ4 && isQ5;
+    accuser.accusationScore = score;
 
     const tsInfo = this.writeDesktopTimestamp(accuser.name, accuser.id, answers || {}, score, isSolved);
+
+    // Alert Admin
+    this.logSystem('ADMIN_ALERT', accuser.id, `🚨 TRIBUNAL SUBMISSION: Team "${accuser.name}" (${accuser.id}) filed accusation (Score: ${score}/5).`);
+    this.io?.emit('admin_submission_alert', {
+      teamId: accuser.id,
+      teamName: accuser.name,
+      score,
+      isSolved,
+      timestamp: accuser.accusationSubmittedAt
+    });
 
     if (isSolved) {
       accuser.score += 500;

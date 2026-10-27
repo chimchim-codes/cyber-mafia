@@ -260,6 +260,22 @@ module.exports = async function handler(req, res) {
         return res.status(400).json({ success: false, message: 'Missing indictment answers' });
       }
 
+      // Enforce single submission per team
+      const { data: teamData } = await supabase
+        .from('teams')
+        .select('*')
+        .eq('session_id', sessionId)
+        .eq('id', teamId)
+        .single();
+
+      if (teamData?.has_submitted_accusation) {
+        return res.status(400).json({
+          success: false,
+          alreadySubmitted: true,
+          message: 'Your squad has already submitted an accusation. Only 1 submission is permitted per match.'
+        });
+      }
+
       const isQ1 = answers.q1 === 'D'; // Elena Ward
       const isQ2 = answers.q2 === 'A'; // Poison administered through drink
       const isQ3 = answers.q3 === 'B'; // Prevent exposing unauthorized exports
@@ -268,6 +284,24 @@ module.exports = async function handler(req, res) {
 
       const correctCount = (isQ1 ? 1 : 0) + (isQ2 ? 1 : 0) + (isQ3 ? 1 : 0) + (isQ4 ? 1 : 0) + (isQ5 ? 1 : 0);
       const isSolved = correctCount === 5;
+      const nowIso = new Date().toISOString();
+
+      // Mark team as having submitted permanently
+      if (teamId) {
+        await supabase.from('teams').update({
+          has_submitted_accusation: true,
+          accusation_submitted_at: nowIso,
+          accusation_score: correctCount
+        }).eq('session_id', sessionId).eq('id', teamId);
+      }
+
+      // Alert the Admin immediately
+      await gameService.logSystem(
+        sessionId,
+        'ADMIN_ALERT',
+        teamId,
+        `🚨 TRIBUNAL SUBMISSION: Team "${teamData?.name || teamId}" has filed their final accusation! Score: ${correctCount}/5 (${isSolved ? 'CONVICTED' : 'ACQUITTED'}).`
+      );
 
       if (isSolved) {
         if (teamId) {
@@ -278,7 +312,7 @@ module.exports = async function handler(req, res) {
             eventType: 'CORRECT_HACKER_ACCUSATION',
             scoreDelta: session.scoring_rules?.CORRECT_HACKER_ACCUSATION || 300,
             idempotencyKey: `mcq_verdict_${sessionId}_${teamId}`,
-            metadata: { score: correctCount, isSolved: true }
+            metadata: { score: correctCount, isSolved: true, submittedAt: nowIso }
           });
         }
 
@@ -296,7 +330,7 @@ module.exports = async function handler(req, res) {
             method: 'Organophosphate neurotoxin in drink',
             score: correctCount,
             total: 5,
-            timestamp: new Date().toISOString()
+            timestamp: nowIso
           }
         }).eq('id', sessionId);
 
@@ -306,6 +340,7 @@ module.exports = async function handler(req, res) {
           success: true,
           isSolved: true,
           score: correctCount,
+          timestamp: nowIso,
           message: 'Case Solved! Elena Ward convicted. +300 PTS awarded.'
         });
       } else {
@@ -316,8 +351,8 @@ module.exports = async function handler(req, res) {
             levelId: session.current_round || 1,
             eventType: 'FALSE_ACCUSATION_PENALTY',
             scoreDelta: session.scoring_rules?.FALSE_ACCUSATION_PENALTY || -100,
-            idempotencyKey: `mcq_penalty_${sessionId}_${teamId}_${Date.now()}`,
-            metadata: { score: correctCount, isSolved: false }
+            idempotencyKey: `mcq_penalty_${sessionId}_${teamId}`,
+            metadata: { score: correctCount, isSolved: false, submittedAt: nowIso }
           });
         }
 
@@ -327,6 +362,7 @@ module.exports = async function handler(req, res) {
           success: false,
           isSolved: false,
           score: correctCount,
+          timestamp: nowIso,
           message: `Accusation rejected: ${correctCount}/5 correct. Penalized -100 PTS.`
         });
       }
