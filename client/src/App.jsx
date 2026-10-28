@@ -13,9 +13,13 @@ function AppContent() {
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const { isAuthenticated, isAgent, isAdmin } = useAuth();
 
-  const handleLoginSuccess = () => {
-    if (isAdmin) setCurrentView('admin');
-    else if (isAgent) setCurrentView('agent');
+  const handleLoginSuccess = (loggedInUser) => {
+    const targetUser = loggedInUser || user;
+    if (targetUser?.role === 'admin') {
+      setCurrentView('admin');
+    } else if (targetUser?.role === 'agent') {
+      setCurrentView('agent');
+    }
   };
 
   return (

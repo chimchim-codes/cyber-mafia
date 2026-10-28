@@ -52,6 +52,17 @@ export function AuthProvider({ children }) {
     return res;
   };
 
+  const register = async (userData) => {
+    const res = await api.auth.register(userData);
+    if (res.success && res.token) {
+      setToken(res.token);
+      setUser(res.user);
+      localStorage.setItem('supporthub_token', res.token);
+      localStorage.setItem('supporthub_user', JSON.stringify(res.user));
+    }
+    return res;
+  };
+
   const logout = () => {
     setToken(null);
     setUser(null);
@@ -68,6 +79,7 @@ export function AuthProvider({ children }) {
     isAgent: user?.role === 'agent' || user?.role === 'admin',
     login,
     quickLogin,
+    register,
     logout,
   };
 
