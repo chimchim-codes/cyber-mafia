@@ -1,5 +1,7 @@
 const API_BASE = import.meta.env.VITE_API_URL || (
-  typeof window !== 'undefined' && window.location.port === '5001' ? '' : 'http://localhost:5001'
+  typeof window !== 'undefined'
+    ? (window.location.port === '5001' ? '' : `${window.location.protocol}//${window.location.hostname}:5001`)
+    : 'http://localhost:5001'
 );
 
 async function request(endpoint, options = {}) {

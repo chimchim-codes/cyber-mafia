@@ -19,18 +19,24 @@ const adminRoutes = require('./routes/adminRoutes');
 const app = express();
 const server = http.createServer(app);
 
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Reflect incoming origin to comply with CORS specification when credentials: true
+    callback(null, true);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+};
+
 // Configure Socket.IO
 const io = new Server(server, {
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'],
-    credentials: true,
-  },
+  cors: corsOptions,
   pingTimeout: 60000,
 });
 
 // Middleware
-app.use(cors({ origin: '*', credentials: true }));
+app.use(cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
