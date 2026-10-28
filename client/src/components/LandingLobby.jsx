@@ -3,7 +3,7 @@
 // Prompts ONLY for Squad Name and System No (Terminal ID)
 
 import React, { useState } from 'react';
-import { Terminal, Play, Shield, Monitor } from 'lucide-react';
+import { Terminal, Play, Shield, Monitor, AlertTriangle } from 'lucide-react';
 import { playClick, initAudio } from '../utils/soundEffects';
 
 export default function LandingLobby({ gameState, onJoinTeam, onStartGame, isAdmin }) {
@@ -15,18 +15,46 @@ export default function LandingLobby({ gameState, onJoinTeam, onStartGame, isAdm
     return localStorage.getItem('cyber_mafia_system_no') || '';
   });
 
+  const [validationError, setValidationError] = useState('');
+
   const handleStart = () => {
+    const trimmedSquadName = squadName.trim();
+    const trimmedSystemNo = systemNo.trim();
+
+    if (!trimmedSquadName) {
+      setValidationError('Squad Name is required. Please enter your team name.');
+      return;
+    }
+    if (trimmedSquadName.length < 2 || trimmedSquadName.length > 30) {
+      setValidationError('Squad Name must be between 2 and 30 characters.');
+      return;
+    }
+    if (!trimmedSystemNo) {
+      setValidationError('System No is required (e.g. SYS-04 or PC-12).');
+      return;
+    }
+    if (trimmedSystemNo.length < 1 || trimmedSystemNo.length > 20) {
+      setValidationError('System No must be between 1 and 20 characters.');
+      return;
+    }
+
+    setValidationError('');
     initAudio();
     playClick();
-    const finalSquadName = squadName.trim() || 'Squad_' + Math.floor(Math.random() * 900 + 100);
-    const finalSystemNo = systemNo.trim() || 'SYS-' + Math.floor(Math.random() * 90 + 10);
-    const finalTeamId = 'C01';
+
+    // Deterministic teamId derived from the squad name so teammates/reconnects match
+    const cleanSlug = trimmedSquadName.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+    const savedTeamId = localStorage.getItem('cyber_mafia_team_id');
+    const savedSquadName = localStorage.getItem('cyber_mafia_team_name');
+    const finalTeamId = (savedSquadName === trimmedSquadName && savedTeamId) 
+      ? savedTeamId 
+      : (cleanSlug ? `SQ_${cleanSlug}` : `SQ_${Math.floor(1000 + Math.random() * 9000)}`);
 
     // Persist identity into localStorage so reload preserves everything
     try {
-      localStorage.setItem('cyber_mafia_team_name', finalSquadName);
-      localStorage.setItem('cyber_mafia_player_name', finalSquadName);
-      localStorage.setItem('cyber_mafia_system_no', finalSystemNo);
+      localStorage.setItem('cyber_mafia_team_name', trimmedSquadName);
+      localStorage.setItem('cyber_mafia_player_name', trimmedSquadName);
+      localStorage.setItem('cyber_mafia_system_no', trimmedSystemNo);
       localStorage.setItem('cyber_mafia_team_id', finalTeamId);
     } catch (e) {}
 
@@ -45,7 +73,7 @@ export default function LandingLobby({ gameState, onJoinTeam, onStartGame, isAdm
     }
 
     if (onJoinTeam) {
-      onJoinTeam(finalSquadName, finalTeamId, finalSystemNo, finalSquadName);
+      onJoinTeam(trimmedSquadName, finalTeamId, trimmedSystemNo, trimmedSquadName);
     }
 
     setTimeout(() => {
@@ -82,6 +110,14 @@ export default function LandingLobby({ gameState, onJoinTeam, onStartGame, isAdm
           </span>
         </div>
 
+        {/* Inline Validation Error Banner */}
+        {validationError && (
+          <div className="p-3 bg-rose-950/80 border border-rose-500/80 rounded-xl text-xs text-rose-200 flex items-center gap-2 font-mono shadow-md animate-pulse">
+            <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+            <span>{validationError}</span>
+          </div>
+        )}
+
         {/* Exactly 2 Spaces: Squad Name & System No */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
@@ -91,8 +127,12 @@ export default function LandingLobby({ gameState, onJoinTeam, onStartGame, isAdm
             <input
               type="text"
               value={squadName}
-              onChange={(e) => setSquadName(e.target.value)}
+              onChange={(e) => {
+                setSquadName(e.target.value);
+                if (validationError) setValidationError('');
+              }}
               placeholder="e.g. Cyber Sentinel"
+              maxLength={30}
               className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-sm text-slate-100 focus:outline-none focus:border-cyan-500 font-mono shadow-inner transition-colors"
               onKeyDown={(e) => {
                 if (e.key === 'Enter') handleStart();
@@ -108,8 +148,12 @@ export default function LandingLobby({ gameState, onJoinTeam, onStartGame, isAdm
             <input
               type="text"
               value={systemNo}
-              onChange={(e) => setSystemNo(e.target.value)}
+              onChange={(e) => {
+                setSystemNo(e.target.value);
+                if (validationError) setValidationError('');
+              }}
               placeholder="e.g. SYS-04 or PC-12"
+              maxLength={20}
               className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-sm text-slate-100 focus:outline-none focus:border-cyan-500 font-mono shadow-inner transition-colors"
               onKeyDown={(e) => {
                 if (e.key === 'Enter') handleStart();

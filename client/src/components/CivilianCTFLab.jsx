@@ -121,37 +121,62 @@ export default function CivilianCTFLab({
     }
   };
 
-  const handleRunCode = () => {
+  const handleRunCode = async () => {
     initAudio();
     playClick();
     if (!activeChallenge || isRunning) return;
     setIsRunning(true);
+    setFeedback(null);
 
     try {
-      const res = executePythonCode(activeCode, activeChallenge.id, activeChallenge);
+      // Local execution for instant feedback/preview
+      let localRes = null;
+      try {
+        localRes = executePythonCode(activeCode, activeChallenge.id, activeChallenge);
+        if (localRes?.output) {
+          setTerminalOutputs(prev => ({
+            ...prev,
+            [activeChallenge.id]: localRes.output
+          }));
+        }
+      } catch (_) {}
 
-      setTerminalOutputs(prev => ({
-        ...prev,
-        [activeChallenge.id]: res.output
-      }));
+      // Trigger authoritative backend solve action with full Python code
+      const solveRes = await onSolveChallenge(
+        activeChallenge.id,
+        localRes?.result || '',
+        activeChallenge.stageNumber,
+        activeCode
+      );
 
-      if (res.isVerified) {
+      if (solveRes?.output || solveRes?.stdout) {
+        setTerminalOutputs(prev => ({
+          ...prev,
+          [activeChallenge.id]: solveRes.output || solveRes.stdout
+        }));
+      }
+
+      if (solveRes?.success && solveRes?.isVerified !== false) {
         playSuccess();
-        setSubmittedAnswers(prev => ({ ...prev, [activeChallenge.id]: res.result }));
+        const ans = solveRes.cleanOutput || solveRes.result || localRes?.result || 'VERIFIED';
+        setSubmittedAnswers(prev => ({ ...prev, [activeChallenge.id]: ans }));
         setFeedback({
           type: 'SUCCESS',
-          message: `Stage ${activeChallenge.stageNumber} Verified! +${activeChallenge.rewardScore} PTS awarded. Evidence batch unlocked!`
+          message: solveRes.message || `Stage ${activeChallenge.stageNumber} Verified! +${activeChallenge.rewardScore} PTS awarded. Evidence batch unlocked!`
         });
-
-        // Trigger authoritative backend solve action
-        onSolveChallenge(activeChallenge.id, res.result, activeChallenge.stageNumber);
       } else {
         playError();
         setFeedback({
           type: 'ERROR',
-          message: res.feedback || 'Code executed, but output does not match the required forensic solution.'
+          message: solveRes?.feedback || solveRes?.message || localRes?.feedback || 'Code failed authoritative forensic verification.'
         });
       }
+    } catch (err) {
+      playError();
+      setFeedback({
+        type: 'ERROR',
+        message: err.message || 'Execution error encountered. Please check your script and try again.'
+      });
     } finally {
       setIsRunning(false);
     }

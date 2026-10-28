@@ -1,8 +1,8 @@
 // client/src/components/LeaderboardView.jsx
 // Live Authoritative Leaderboard Component with Real-Time Reordering & Deterministic Ties
 
-import React, { useState, useEffect } from 'react';
-import { Award, Trophy, Shield, RefreshCw, AlertTriangle, CheckCircle2, Clock, X, Lock, Check, Monitor } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Award, Trophy, Shield, RefreshCw, AlertTriangle, CheckCircle2, Clock, X, Lock, Check, Monitor, Users } from 'lucide-react';
 import { playClick } from '../utils/soundEffects';
 
 export default function LeaderboardView({
@@ -18,108 +18,72 @@ export default function LeaderboardView({
   elapsedSeconds = 0,
   realtimeStatus = 'CONNECTED'
 }) {
-  const [leaderboard, setLeaderboard] = useState([]);
+  const [leaderboard, setLeaderboard] = useState(() => {
+    return Array.isArray(initialLeaderboard) && initialLeaderboard.length > 0 ? initialLeaderboard : [];
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(new Date());
-
-  const buildLocalLeaderboard = () => {
-    const baseSquads = [
-      { id: 'C01', name: 'Cyber Alpha' },
-      { id: 'C02', name: 'Grid Shield' },
-      { id: 'C03', name: 'Neural Sentinel' },
-      { id: 'C04', name: 'Binary Vanguard' },
-      { id: 'C05', name: 'Quantum Watch' },
-      { id: 'C06', name: 'Dark Matrix' },
-      { id: 'C07', name: 'Cipher Guard' },
-      { id: 'C08', name: 'Aegis Core' }
-    ];
-
-    const sourceTeams = (gameState?.teams && gameState.teams.length > 0)
-      ? gameState.teams
-      : baseSquads;
-
-    const myScore = myTeam?.score || 0;
-    const myId = myTeam?.id || 'C01';
-    const completedStagesCount = gameState?.completedStages?.length || 0;
-    const activeSysNo = localStorage.getItem('cyber_mafia_system_no') || myTeam?.systemNo || 'SYS-01';
-
-    const mapped = sourceTeams.map(t => {
-      const isMe = t.id === myId || t.suspectId === myId;
-      const score = isMe ? Math.max(t.score || 0, myScore) : (t.score || 0);
-      const levelsDone = isMe ? completedStagesCount : (t.completedLevels || 0);
-      return {
-        teamId: t.id,
-        teamName: isMe && myTeam?.name ? myTeam.name : (t.name || `Squad ${t.id}`),
-        score,
-        completedLevels: levelsDone,
-        systemNo: isMe ? activeSysNo : `SYS-${t.id}`,
-        integrity: t.integrity || 100,
-        isEliminated: t.isEliminated || false,
-        completionStatus: levelsDone >= 5 ? 'COMPLETED' : 'IN_PROGRESS'
-      };
-    });
-
-    mapped.sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
-      if (b.completedLevels !== a.completedLevels) return b.completedLevels - a.completedLevels;
-      return a.teamId.localeCompare(b.teamId);
-    });
-
-    return mapped.map((t, idx) => ({ ...t, rank: idx + 1 }));
-  };
+  const abortControllerRef = useRef(null);
 
   const fetchLeaderboard = async () => {
+    // Avoid making unnecessary requests when tab is hidden
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+      return;
+    }
+
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    abortControllerRef.current = new AbortController();
+
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/leaderboard?sessionId=${encodeURIComponent(sessionId)}`);
+      const res = await fetch(`/api/leaderboard?sessionId=${encodeURIComponent(sessionId)}`, {
+        signal: abortControllerRef.current.signal
+      });
       if (res.ok) {
         const data = await res.json();
-        if (data.leaderboard && data.leaderboard.length > 0) {
-          // Merge local player's latest score if higher to ensure no lag
-          const myId = myTeam?.id;
-          const myScore = myTeam?.score || 0;
-          const merged = data.leaderboard.map(t => {
-            if (t.teamId === myId && myScore > (t.score || 0)) {
-              return { ...t, score: myScore };
-            }
-            return t;
-          });
-          merged.sort((a, b) => (b.score || 0) - (a.score || 0));
-          setLeaderboard(merged.map((t, i) => ({ ...t, rank: i + 1 })));
+        if (Array.isArray(data.leaderboard)) {
+          setLeaderboard(data.leaderboard);
           setLastRefreshed(new Date());
-          return;
         }
+      } else {
+        setError('Failed to fetch live standings.');
       }
-      // If API returned empty, fallback to local authoritative list
-      setLeaderboard(buildLocalLeaderboard());
-      setLastRefreshed(new Date());
     } catch (err) {
-      // Offline / standalone fallback
-      setLeaderboard(buildLocalLeaderboard());
-      setLastRefreshed(new Date());
+      if (err.name !== 'AbortError') {
+        setError('Network error while refreshing leaderboard.');
+      }
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    if (initialLeaderboard && initialLeaderboard.length > 0) {
-      setLeaderboard(initialLeaderboard);
-    } else {
-      setLeaderboard(buildLocalLeaderboard());
-      fetchLeaderboard();
-    }
-  }, [initialLeaderboard, myTeam?.score, gameState?.completedStages?.length]);
-
-  // Polling every 5 seconds for live round and time updates
-  useEffect(() => {
     if (!isOpen) return;
-    const interval = setInterval(() => {
-      fetchLeaderboard();
-    }, 5000);
-    return () => clearInterval(interval);
+
+    fetchLeaderboard();
+
+    // 8-second interval polling (meets 5-10s specification)
+    const interval = setInterval(fetchLeaderboard, 8000);
+
+    // Resume polling immediately when tab becomes visible
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fetchLeaderboard();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      clearInterval(interval);
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, [isOpen, sessionId]);
 
   if (!isOpen) return null;
@@ -211,8 +175,14 @@ export default function LeaderboardView({
         {/* Leaderboard Table */}
         <div className="flex-1 overflow-y-auto space-y-2 pr-1">
           {leaderboard.length === 0 ? (
-            <div className="text-center py-10 text-slate-500 text-xs">
-              Initializing squad leaderboard...
+            <div className="text-center py-12 px-4 space-y-3">
+              <div className="w-12 h-12 rounded-2xl bg-slate-950 border border-slate-800 flex items-center justify-center mx-auto text-slate-500">
+                <Users className="w-6 h-6 text-slate-500" />
+              </div>
+              <h4 className="text-sm font-bold text-slate-200">No active players yet.</h4>
+              <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                Waiting for investigator squads to join the match. Active players and live standings will appear here automatically.
+              </p>
             </div>
           ) : (
             leaderboard.map((team, idx) => {

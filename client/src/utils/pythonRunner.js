@@ -201,12 +201,22 @@ export function transpilePython(code) {
  * rather than hardcoding the expected string directly.
  */
 function verifyProperForensicLogic(code, challengeId, cleanOutput) {
-  const normalized = code.toLowerCase();
+  const codeLines = (code || '').split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+  const cleanCode = codeLines.join('\n');
+  const normalized = cleanCode.toLowerCase();
+
+  // Obvious single hardcoded print check
+  if (codeLines.length === 1 && codeLines[0].startsWith('print(')) {
+    return {
+      valid: false,
+      reason: "Bypass detected: Submissions that only print a constant answer without implementing logic are rejected."
+    };
+  }
 
   if (challengeId === 'CHAL-PY-1') {
     // Challenge 1: Find the Bypass Key
     // Must parse from header using string methods
-    const usesHeader = normalized.includes('header') || normalized.includes('x-bypass-key');
+    const usesHeader = normalized.includes('header');
     const usesStringOps = normalized.includes('split') || 
                           normalized.includes('find') || 
                           normalized.includes('index') || 
@@ -258,6 +268,13 @@ function verifyProperForensicLogic(code, challengeId, cleanOutput) {
     // Must define/use check_access and verify both conditions
     const hasAccessRule = normalized.includes('check_access');
     const hasDualCondition = normalized.includes('and') || normalized.includes('&&') || (normalized.includes('authorized_users') && normalized.includes('valid_code'));
+
+    if (normalized.includes('return "access_granted"') && !normalized.includes('if ') && !normalized.includes('else')) {
+      return {
+        valid: false,
+        reason: "Bypass detected: 'check_access' cannot return a constant value; it must evaluate access conditions dynamically."
+      };
+    }
 
     if (!hasAccessRule || !hasDualCondition) {
       return {

@@ -7,6 +7,7 @@ const os = require('os');
 const fs = require('fs');
 const path = require('path');
 const { INVESTIGATION_LOCATIONS, generateHackerChallenge, generateCivilianLabChallenges } = require('./challenges');
+const { validatePythonChallenge } = require('./challengeValidator');
 const EvidenceManager = require('./evidence');
 const BotAI = require('./botAI');
 
@@ -304,7 +305,7 @@ class GameEngine extends EventEmitter {
   }
 
   // Solve Civilian CTF Lab Challenge
-  solveCivilianChallenge(teamId, challengeId, answer) {
+  solveCivilianChallenge(teamId, challengeId, answer, code = null) {
     const team = this.teams.find(t => 
       t.id === teamId || 
       t.suspectId === teamId || 
@@ -320,7 +321,18 @@ class GameEngine extends EventEmitter {
       return { success: false, message: 'Challenge already solved by your squad.' };
     }
 
-    const isCorrect = (answer || '').trim().toLowerCase() === (chal.expected || '').trim().toLowerCase();
+    let isCorrect = false;
+    let valResult = null;
+
+    if (code) {
+      valResult = validatePythonChallenge(code, challengeId);
+      isCorrect = Boolean(valResult && valResult.isVerified);
+    } else {
+      // Internal bot AI and test fallback
+      const cleanAnswer = (answer || '').trim().toLowerCase();
+      isCorrect = cleanAnswer === (chal.expected || '').trim().toLowerCase() ||
+        Boolean(chal.acceptedAlternatives?.some(alt => (alt || '').trim().toLowerCase() === cleanAnswer));
+    }
 
     if (isCorrect) {
       if (!chal.solvedBy) chal.solvedBy = [];
@@ -337,11 +349,19 @@ class GameEngine extends EventEmitter {
       this.emitStateUpdate();
       return {
         success: true,
+        isVerified: true,
         message: `Challenge Solved! +${chal.rewardScore} PTS. Clue unlocked: "${clueText}"`,
-        clue: clueText
+        clue: clueText,
+        cleanOutput: valResult?.cleanOutput || answer,
+        output: valResult?.stdout || `[✔] Verified solution for ${chal.title}`
       };
     } else {
-      return { success: false, message: 'Incorrect answer. Check the prompt or request a hint.' };
+      return {
+        success: false,
+        isVerified: false,
+        message: valResult?.feedback || 'Incorrect answer. Check the prompt or request a hint.',
+        output: valResult?.stdout || ''
+      };
     }
   }
 

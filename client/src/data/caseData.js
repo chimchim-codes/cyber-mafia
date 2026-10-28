@@ -59,8 +59,6 @@ header = "Host: sec.local\\r\\nX-Bypass-Key: BYPASS-ELENA-WARD-99\\r\\nUser-Agen
 # TODO: Extract and print the value of X-Bypass-Key using string manipulation (e.g. .split())
 
 `,
-    expected: 'BYPASS-ELENA-WARD-99',
-    acceptedAlternatives: ['BYPASS-ELENA-WARD', 'BYPASS-ELENA-WARD-99'],
     hint: 'Split the header on "\\r\\n" or look for the line starting with "X-Bypass-Key:". Split that line on ": " to obtain the key.',
     unlocksEvidenceBatch: 2,
     unlockSummary: 'Unlocks Batch 2: Police interview with Dr. Sen, Ingress Syslog dump, and Felix Grant\'s shift notes.'
@@ -88,8 +86,6 @@ login_records = [
 # TODO: Iterate through login_records and print the username that has a "FAILED" status
 
 `,
-    expected: 'guest_temp',
-    acceptedAlternatives: ['guest_temp', '"guest_temp"'],
     hint: 'Iterate through each tuple (user, status) in login_records. Check if status == "FAILED", then print that user.',
     unlocksEvidenceBatch: 3,
     unlockSummary: 'Unlocks Batch 3: Noah Mercer\'s deleted bash history, Noah\'s interrogation transcript, and Dr. Sen\'s patent notice.'
@@ -112,8 +108,6 @@ logged_users = ["mira_sen", "felix_grant", "shadow_operator", "elena_ward"]
 # TODO: Find the username in logged_users that does NOT appear in authorized_users and print it
 
 `,
-    expected: 'shadow_operator',
-    acceptedAlternatives: ['shadow_operator', '"shadow_operator"'],
     hint: 'Use `if user not in authorized_users:` inside a loop over `logged_users` to spot the unauthorized account.',
     unlocksEvidenceBatch: 4,
     unlockSummary: 'Unlocks Batch 4: Rogue user database trace, Felix Grant\'s bribe confession, and chemical quarantine verification.'
@@ -141,8 +135,6 @@ def check_access(user, code):
 # TODO: Call check_access for user "elena_ward" with code "SEC-7702" and print the returned status
 
 `,
-    expected: 'ACCESS_GRANTED',
-    acceptedAlternatives: ['ACCESS_GRANTED', '"ACCESS_GRANTED"'],
     hint: 'Check if both conditions (user in authorized_users and code == valid_code) evaluate to True. It returns "ACCESS_GRANTED".',
     unlocksEvidenceBatch: 5,
     unlockSummary: 'Unlocks Batch 5: Elena\'s deleted offshore emails, door override logs, and the lounge witness statement.'
@@ -174,8 +166,6 @@ auth_logs = [
 # TODO: Filter auth_logs for status == 200, identify the record with the latest timestamp, and print the username
 
 `,
-    expected: 'elena_ward',
-    acceptedAlternatives: ['elena_ward', '"elena_ward"'],
     hint: 'Filter for entries where status == 200. The timestamps are 08:12:00, 08:19:30, 08:24:10, and 08:31:45. 08:31:45 is the latest, belonging to elena_ward.',
     unlocksEvidenceBatch: 6,
     unlockSummary: 'Unlocks Final Batch 6: Master auth telemetry ledger, biometric fingerprint match report, and High Tribunal dossier!'

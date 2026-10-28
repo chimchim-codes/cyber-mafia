@@ -15,7 +15,8 @@ module.exports = async function handler(req, res) {
   try {
     const sessionId = req.query.sessionId || 'default-cyber-session';
     const session = await gameService.getOrCreateSession(sessionId);
-    const leaderboard = await gameService.getLeaderboard(sessionId);
+    const activeOnly = req.query.includeAll !== 'true';
+    const leaderboard = await gameService.getLeaderboard(sessionId, { activeOnly });
     const timing = gameService.calculateElapsedTiming(session);
 
     return res.status(200).json({

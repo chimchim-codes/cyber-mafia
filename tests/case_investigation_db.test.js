@@ -85,6 +85,11 @@ describe('Database Integration: False Trials Murder Investigation', () => {
         teamId: 'S01',
         payload: {
           challengeId: 'CHAL-PY-1',
+          code: `header = "Host: sec.local\\r\\nX-Bypass-Key: BYPASS-ELENA-WARD\\r\\nUser-Agent: Terminal/1.0"
+lines = header.split("\\r\\n")
+for line in lines:
+    if line.startswith("X-Bypass-Key:"):
+        print(line.split(": ")[1])`,
           answer: 'BYPASS-ELENA-WARD',
           stageNumber: 1
         }

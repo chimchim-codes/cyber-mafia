@@ -27,15 +27,23 @@ module.exports = async function handler(req, res) {
     }
 
     if (req.method === 'POST') {
-      const { action, sessionId = 'default-cyber-session', playerName, teamId, clientId } = req.body || {};
+      const { action, sessionId = 'default-cyber-session', playerName, teamId, clientId, teamName, systemNo } = req.body || {};
 
       if (action === 'JOIN_TEAM') {
         if (!teamId) {
           return res.status(400).json({ success: false, message: 'teamId is required' });
         }
-        const updatedTeam = await gameService.joinTeam(sessionId, playerName, teamId, clientId);
+        const updatedTeam = await gameService.joinTeam(sessionId, playerName, teamId, clientId, { teamName, systemNo });
         const state = await gameService.getClientState(sessionId, teamId, isAdmin);
         return res.status(200).json({ success: true, team: updatedTeam, state });
+      }
+
+      if (action === 'HEARTBEAT') {
+        if (!teamId) {
+          return res.status(400).json({ success: false, message: 'teamId is required' });
+        }
+        const result = await gameService.recordHeartbeat(sessionId, teamId);
+        return res.status(200).json(result);
       }
 
       if (action === 'RECONNECT') {

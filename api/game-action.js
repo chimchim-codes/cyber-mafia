@@ -5,6 +5,7 @@ const gameService = require('../server/services/gameService');
 const { getServiceClient } = require('../server/db/supabaseClient');
 const { generateHackerChallenge, generateCivilianLabChallenges } = require('../server/game/challenges');
 const { verifyAdminAuthorization } = require('../server/utils/auth');
+const { validatePythonChallenge } = require('../server/game/challengeValidator');
 
 const labChallenges = generateCivilianLabChallenges();
 
@@ -130,6 +131,32 @@ module.exports = async function handler(req, res) {
       return res.status(200).json(result);
     }
 
+    if (action === 'ADMIN_REMOVE_PLAYER') {
+      const auth = verifyAdminAuthorization(req);
+      if (!auth.authorized) {
+        return res.status(auth.statusCode || 401).json({
+          success: false,
+          code: auth.code,
+          message: auth.message || 'Admin authorization required to remove player.'
+        });
+      }
+      const targetTeamId = payload.teamId || teamId;
+      if (!targetTeamId) {
+        return res.status(400).json({ success: false, message: 'teamId is required to remove player.' });
+      }
+      const result = await gameService.removePlayer(sessionId, targetTeamId, auth.key || 'ADMIN', payload.reason || 'Removed by administrator');
+      return res.status(200).json(result);
+    }
+
+    if (action === 'HEARTBEAT') {
+      const targetTeamId = teamId || payload.teamId;
+      if (!targetTeamId) {
+        return res.status(400).json({ success: false, message: 'teamId is required for heartbeat.' });
+      }
+      const result = await gameService.recordHeartbeat(sessionId, targetTeamId);
+      return res.status(200).json(result);
+    }
+
     // Admin Phase & Test Overrides
     if (action === 'FORCE_PHASE') {
       const auth = verifyAdminAuthorization(req);
@@ -225,6 +252,24 @@ module.exports = async function handler(req, res) {
 
       await gameService.logSystem(sessionId, 'ADMIN_RESET', 'ADMIN', `Match session ${sessionId} completely reset to Lobby. All scores and checkpoints wiped.`);
       return res.status(200).json({ success: true, message: 'Game session and all scores reset to lobby.' });
+    }
+
+    // Verify team is not removed or eliminated by admin
+    if (teamId) {
+      const { data: currentTeam } = await supabase
+        .from('teams')
+        .select('id, is_active, is_eliminated, status, removal_reason')
+        .eq('session_id', sessionId)
+        .eq('id', teamId)
+        .single();
+
+      if (currentTeam && (currentTeam.status === 'REMOVED_BY_ADMIN' || (currentTeam.is_eliminated && currentTeam.removal_reason))) {
+        return res.status(403).json({
+          success: false,
+          code: 'REMOVED_BY_ADMIN',
+          message: 'You have been removed from the session by an administrator.'
+        });
+      }
     }
 
     // Verify session is active for regular gameplay actions
@@ -325,22 +370,70 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    // Gameplay: Civilian CTF Lab Solution
+    // Standalone code execution & verification check
+    if (action === 'VALIDATE_PYTHON_CODE') {
+      const { challengeId, code } = payload || {};
+      if (!challengeId || !code) {
+        return res.status(400).json({ success: false, message: 'Missing challengeId or code' });
+      }
+      const valResult = validatePythonChallenge(code, challengeId);
+      return res.status(200).json({
+        success: Boolean(valResult && valResult.isVerified),
+        isVerified: Boolean(valResult && valResult.isVerified),
+        cleanOutput: valResult?.cleanOutput || '',
+        output: valResult?.stdout || valResult?.output || '',
+        feedback: valResult?.feedback || '',
+        error: valResult?.error || null
+      });
+    }
+
+    // Gameplay: Civilian CTF Lab Solution (Authoritative Code Execution & Validation)
     if (action === 'SOLVE_CIVILIAN_CHALLENGE') {
-      const { challengeId, answer } = payload;
+      const { challengeId, code, answer, stageNumber } = payload || {};
       const chal = labChallenges.find(c => c.id === challengeId);
       if (!chal) {
         return res.status(400).json({ success: false, message: 'Challenge not found' });
       }
 
-      const cleanAnswer = (answer || '').trim().toLowerCase();
-      const isExpected = cleanAnswer === (chal.expected || '').trim().toLowerCase();
-      const isAlternative = chal.acceptedAlternatives?.some(
-        alt => (alt || '').trim().toLowerCase() === cleanAnswer
-      );
+      // Check progression lock: player cannot skip ahead to locked stages
+      let currentTeam = null;
+      if (teamId) {
+        const { data } = await supabase
+          .from('teams')
+          .select('completed_stages')
+          .eq('session_id', sessionId)
+          .eq('id', teamId)
+          .single();
+        currentTeam = data;
+      }
+      const completedCount = currentTeam?.completed_stages || 0;
+      const reqStage = chal.stageNumber || stageNumber || 1;
+      if (reqStage > completedCount + 1) {
+        return res.status(400).json({
+          success: false,
+          isVerified: false,
+          message: `Stage ${reqStage} is locked. You must solve Stage ${completedCount + 1} first.`
+        });
+      }
 
-      if (!isExpected && !isAlternative) {
-        return res.status(200).json({ success: false, message: 'Incorrect solution. Inspect the clue and try again.' });
+      // Authoritative Python Validation: Code must be provided and must pass verification
+      if (!code || typeof code !== 'string' || !code.trim()) {
+        return res.status(400).json({
+          success: false,
+          isVerified: false,
+          message: 'Valid Python solution code is required for challenge verification.'
+        });
+      }
+
+      const valResult = validatePythonChallenge(code, challengeId);
+      if (!valResult || !valResult.isVerified) {
+        return res.status(200).json({
+          success: false,
+          isVerified: false,
+          message: valResult?.feedback || 'Validation failed: Solution does not satisfy the required forensic logic.',
+          output: valResult?.stdout || valResult?.output || '',
+          error: valResult?.error || 'Algorithmic verification failed'
+        });
       }
 
       const scoreResult = await gameService.recordScoreEvent({
@@ -360,14 +453,7 @@ module.exports = async function handler(req, res) {
       if (teamId) {
         try {
           const nextCompleted = chal.stageNumber || 1;
-          const { data: currentTeam } = await supabase
-            .from('teams')
-            .select('completed_stages')
-            .eq('session_id', sessionId)
-            .eq('id', teamId)
-            .single();
-
-          const updatedCompleted = Math.max(currentTeam?.completed_stages || 0, nextCompleted);
+          const updatedCompleted = Math.max(completedCount, nextCompleted);
           await supabase.from('teams').update({
             completed_stages: updatedCompleted,
             updated_at: new Date().toISOString()
@@ -389,8 +475,12 @@ module.exports = async function handler(req, res) {
 
       return res.status(200).json({
         success: true,
+        isVerified: true,
+        cleanOutput: valResult.cleanOutput,
+        output: valResult.stdout,
         message: `Challenge Solved! +${chal.rewardScore} Points. ${chal.unlockSummary || 'Evidence Unlocked.'}`,
-        clue: chal.unlockSummary
+        clue: chal.unlockSummary,
+        nextStage: Math.min((chal.stageNumber || 1) + 1, 5)
       });
     }
 

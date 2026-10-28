@@ -169,9 +169,15 @@ class GameService {
   // 2. PLAYER JOIN & ROSTER
   // =========================================================================
 
-  async joinTeam(sessionId, playerName, teamId, socketOrClientId) {
+  async joinTeam(sessionId, playerName, teamId, socketOrClientId, options = {}) {
     const supabase = getServiceClient();
     const session = await this.getOrCreateSession(sessionId);
+
+    const { teamName, systemNo } = (typeof options === 'object' && options !== null) ? options : {};
+    const suspect = CASE_SUSPECTS.find(s => s.id === teamId);
+    const authoritativeName = (teamName && teamName.trim())
+      || (suspect ? suspect.name : ((playerName && playerName.trim()) || `Squad ${teamId}`));
+    const cleanSystemNo = (systemNo && systemNo.trim()) || 'SYS-01';
 
     let { data: team } = await supabase
       .from('teams')
@@ -185,13 +191,18 @@ class GameService {
       const newTeam = {
         id: teamId,
         session_id: sessionId,
-        name: suspect ? suspect.name : `Squad ${teamId}`,
+        name: authoritativeName,
+        system_no: cleanSystemNo,
         role: suspect ? suspect.role : 'CIVILIAN',
         secret_revealed: false,
         integrity: 100,
         score: 0,
         is_bot: false,
+        is_active: true,
         is_eliminated: false,
+        status: 'ACTIVE',
+        removal_reason: null,
+        last_seen_at: new Date().toISOString(),
         modules: {
           dashboard: 'ACTIVE',
           investigation: 'ACTIVE',
@@ -210,25 +221,39 @@ class GameService {
     }
 
     const players = Array.isArray(team.players) ? [...team.players] : [];
-    if (players.length >= 3) {
-      throw new Error(`Team ${teamId} is full (max 3 players)`);
+    const existingPlayerIdx = players.findIndex(p => p.name === playerName || p.clientId === socketOrClientId);
+
+    if (existingPlayerIdx >= 0) {
+      players[existingPlayerIdx].lastSeen = new Date().toISOString();
+      if (cleanSystemNo) players[existingPlayerIdx].systemNo = cleanSystemNo;
+    } else {
+      if (players.length >= 5) {
+        throw new Error(`Team ${teamId} is full`);
+      }
+      players.push({
+        clientId: socketOrClientId || 'CLI_' + crypto.randomBytes(3).toString('hex'),
+        name: playerName || authoritativeName,
+        systemNo: cleanSystemNo,
+        joinedAt: new Date().toISOString()
+      });
     }
 
-    const newPlayer = {
-      clientId: socketOrClientId || 'CLI_' + crypto.randomBytes(3).toString('hex'),
-      name: playerName || `Agent_${crypto.randomBytes(2).toString('hex')}`,
-      joinedAt: new Date().toISOString()
+    const updatePayload = {
+      name: authoritativeName,
+      system_no: cleanSystemNo,
+      players,
+      is_bot: false,
+      is_active: true,
+      is_eliminated: false,
+      status: 'ACTIVE',
+      removal_reason: null,
+      last_seen_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
     };
-
-    players.push(newPlayer);
 
     const { data: updatedTeam, error: updErr } = await supabase
       .from('teams')
-      .update({
-        players,
-        is_bot: false,
-        updated_at: new Date().toISOString()
-      })
+      .update(updatePayload)
       .eq('session_id', sessionId)
       .eq('id', teamId)
       .single();
@@ -237,7 +262,31 @@ class GameService {
       throw new Error(`Database error joining team: ${updErr.message}`);
     }
 
-    return updatedTeam || { ...team, players, is_bot: false };
+    // Ensure team progress for level 1 exists
+    const { data: existingProg } = await supabase
+      .from('team_progress')
+      .select('id')
+      .eq('session_id', sessionId)
+      .eq('team_id', teamId)
+      .eq('level_id', 1)
+      .single();
+
+    if (!existingProg) {
+      await supabase.from('team_progress').upsert({
+        session_id: sessionId,
+        team_id: teamId,
+        level_id: 1,
+        status: 'IN_PROGRESS',
+        validated_challenges: [],
+        progress_data: {},
+        score_contribution: 0,
+        started_at: new Date().toISOString(),
+        last_checkpoint_at: new Date().toISOString(),
+        revision: 1
+      });
+    }
+
+    return updatedTeam || { ...team, ...updatePayload };
   }
 
   // =========================================================================
@@ -520,6 +569,12 @@ class GameService {
       throw new Error('Action rejected: match is already COMPLETED.');
     }
 
+    // Check if team is eliminated or removed by admin
+    const { data: team } = await supabase.from('teams').select('id, is_active, is_eliminated, status, removal_reason').eq('session_id', sessionId).eq('id', teamId).single();
+    if (team && (team.status === 'REMOVED_BY_ADMIN' || (team.is_eliminated && team.removal_reason))) {
+      throw new Error(`Team ${teamId} has been removed by the administrator and cannot record score events.`);
+    }
+
     // Check idempotency to prevent duplicate score awards
     const generatedKey = idempotencyKey || `${sessionId}_${teamId}_${eventType}_${levelId}_${Date.now()}`;
     const { data: existing } = await supabase
@@ -604,8 +659,10 @@ class GameService {
     return total;
   }
 
-  async getLeaderboard(sessionId) {
+  async getLeaderboard(sessionId, options = {}) {
     const supabase = getServiceClient();
+    const activeOnly = options.activeOnly !== undefined ? options.activeOnly : false;
+    const timeoutMs = options.timeoutMs || 90000;
 
     // Fetch session started_at to compute real playing times
     const { data: session } = await supabase
@@ -618,11 +675,40 @@ class GameService {
 
     const { data: teams, error } = await supabase
       .from('teams')
-      .select('id, name, score, integrity, is_eliminated, updated_at, has_submitted_accusation, accusation_submitted_at, accusation_score, completed_stages, completed_levels')
+      .select('id, name, score, integrity, is_bot, is_active, is_eliminated, status, removal_reason, last_seen_at, players, system_no, updated_at, has_submitted_accusation, accusation_submitted_at, accusation_score, completed_stages, completed_levels')
       .eq('session_id', sessionId);
 
     if (error || !teams) {
       return [];
+    }
+
+    let candidateTeams = teams;
+    if (activeOnly) {
+      const now = Date.now();
+      candidateTeams = teams.filter(t => {
+        // Exclude bot teams
+        if (t.is_bot) return false;
+
+        // Exclude eliminated or admin-removed teams
+        if (t.is_eliminated || t.status === 'REMOVED_BY_ADMIN' || t.removal_reason) return false;
+        if (t.is_active === false) return false;
+
+        // Must be genuinely joined by a real player
+        const hasPlayers = (Array.isArray(t.players) && t.players.length > 0) || t.is_active === true;
+        if (!hasPlayers) return false;
+
+        // If team already submitted their final tribunal verdict, keep on leaderboard as completed
+        if (t.has_submitted_accusation) return true;
+
+        // Heartbeat timeout check: if last_seen_at is too old, consider disconnected/inactive
+        if (t.last_seen_at) {
+          const lastSeenMs = new Date(t.last_seen_at).getTime();
+          if (!isNaN(lastSeenMs) && (now - lastSeenMs) > timeoutMs) {
+            return false;
+          }
+        }
+        return true;
+      });
     }
 
     // Fetch team progress to determine levels completed and last checkpoint time
@@ -652,7 +738,7 @@ class GameService {
     };
 
     // Calculate time taken and round info for each team
-    const teamStats = teams.map(t => {
+    const teamStats = candidateTeams.map(t => {
       const comp = (t.completed_stages !== undefined && t.completed_stages !== null)
         ? t.completed_stages
         : (progressMap[t.id]?.completedLevels || 0);
@@ -666,6 +752,7 @@ class GameService {
 
       return {
         ...t,
+        systemNo: t.system_no || (t.players && t.players[0]?.systemNo) || `SYS-${t.id}`,
         completedLevels: comp,
         currentRound,
         latestCheckpoint: checkpointTime,
@@ -698,9 +785,10 @@ class GameService {
       rank: idx + 1,
       teamId: t.id,
       teamName: t.name,
+      systemNo: t.systemNo,
       score: t.score,
       integrity: t.integrity,
-      isEliminated: t.is_eliminated || t.isEliminated,
+      isEliminated: Boolean(t.is_eliminated || t.isEliminated),
       completionStatus: (t.is_eliminated || t.isEliminated) ? 'ELIMINATED' : (t.hasSubmitted ? 'SUBMITTED' : 'ACTIVE'),
       completedLevels: t.completedLevels,
       currentRound: t.currentRound,
@@ -711,6 +799,98 @@ class GameService {
       submittedAt: t.submittedAt,
       accusationScore: t.accusationScore
     }));
+  }
+
+  async recordHeartbeat(sessionId, teamId) {
+    const supabase = getServiceClient();
+    const { data: team, error } = await supabase
+      .from('teams')
+      .select('id, name, is_active, is_eliminated, status, removal_reason')
+      .eq('session_id', sessionId)
+      .eq('id', teamId)
+      .single();
+
+    if (error || !team) {
+      return { success: false, status: 'NOT_FOUND', message: 'Team not found' };
+    }
+
+    if (team.status === 'REMOVED_BY_ADMIN' || (team.is_eliminated && team.removal_reason)) {
+      return {
+        success: false,
+        removed: true,
+        status: 'REMOVED_BY_ADMIN',
+        reason: team.removal_reason || 'Removed by administrator'
+      };
+    }
+
+    const now = new Date().toISOString();
+    await supabase.from('teams').update({
+      is_active: true,
+      last_seen_at: now,
+      updated_at: now
+    }).eq('session_id', sessionId).eq('id', teamId);
+
+    return { success: true, status: 'ACTIVE', timestamp: now };
+  }
+
+  async removePlayer(sessionId, teamId, adminIdentity = 'ADMIN', reason = 'Removed by administrator') {
+    const supabase = getServiceClient();
+
+    const { data: team, error } = await supabase
+      .from('teams')
+      .select('*')
+      .eq('session_id', sessionId)
+      .eq('id', teamId)
+      .single();
+
+    if (error || !team) {
+      throw new Error(`Team ${teamId} not found in session ${sessionId}`);
+    }
+
+    const now = new Date().toISOString();
+    const { error: updErr } = await supabase
+      .from('teams')
+      .update({
+        is_active: false,
+        is_eliminated: true,
+        status: 'REMOVED_BY_ADMIN',
+        removal_reason: reason,
+        removed_at: now,
+        players: [],
+        updated_at: now
+      })
+      .eq('session_id', sessionId)
+      .eq('id', teamId);
+
+    if (updErr) {
+      throw new Error(`Failed to remove player: ${updErr.message}`);
+    }
+
+    // Record in admin audit logs
+    await this.recordAuditLog({
+      sessionId,
+      adminIdentity,
+      actionType: 'ADMIN_REMOVE_PLAYER',
+      targetTeamId: teamId,
+      previousState: { name: team.name, score: team.score, isActive: team.is_active },
+      resultingState: { isActive: false, isEliminated: true, status: 'REMOVED_BY_ADMIN' },
+      reason
+    });
+
+    await this.logSystem(
+      sessionId,
+      'ADMIN_REMOVAL',
+      adminIdentity,
+      `[ADMIN ACTION] Squad ${team.name} (${teamId}) was removed from session by administrator. Reason: ${reason}`
+    );
+
+    return {
+      success: true,
+      teamId,
+      teamName: team.name,
+      removedAt: now,
+      reason
+    };
   }
 
   // =========================================================================
@@ -793,6 +973,16 @@ class GameService {
     if (!team) {
       throw new Error(`Team ${teamId} not found`);
     }
+
+    if (team.status === 'REMOVED_BY_ADMIN' || (team.is_eliminated && team.removal_reason)) {
+      throw new Error(`Team ${teamId} has been removed by the administrator and cannot reconnect.`);
+    }
+
+    await supabase.from('teams').update({
+      is_active: true,
+      last_seen_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    }).eq('session_id', sessionId).eq('id', teamId);
 
     // Load active level progress
     const currentRound = session.current_round || 1;
@@ -1206,9 +1396,11 @@ class GameService {
       return {
         id: t.id,
         name: t.name,
+        systemNo: t.system_no || (t.players && t.players[0]?.systemNo) || `SYS-${t.id}`,
         playersCount: Array.isArray(t.players) ? t.players.length : 0,
         integrity: t.integrity,
-        isEliminated: t.is_eliminated,
+        isEliminated: Boolean(t.is_eliminated),
+        status: t.status || (t.is_eliminated ? 'ELIMINATED' : 'ACTIVE'),
         secretRevealed: t.secret_revealed,
         role: showSecret ? t.role : 'UNKNOWN',
         modules: t.modules,
@@ -1232,7 +1424,7 @@ class GameService {
       .limit(100);
 
     const timing = this.calculateElapsedTiming(session);
-    const leaderboard = await this.getLeaderboard(sessionId);
+    const leaderboard = await this.getLeaderboard(sessionId, { activeOnly: true });
 
     return {
       sessionId: session.id,

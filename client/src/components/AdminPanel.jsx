@@ -69,12 +69,13 @@ export default function AdminPanel({
   const [auditSearch, setAuditSearch] = useState('');
 
   const fetchLiveLeaderboard = async () => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
     setLoadingLeaderboard(true);
     try {
       const res = await fetch(`/api/leaderboard?sessionId=${encodeURIComponent(sessionId)}`);
       if (res.ok) {
         const data = await res.json();
-        if (data.leaderboard) setLiveLeaderboard(data.leaderboard);
+        if (Array.isArray(data.leaderboard)) setLiveLeaderboard(data.leaderboard);
       }
     } catch (e) {
       console.warn('Failed to fetch admin leaderboard:', e);
@@ -83,11 +84,59 @@ export default function AdminPanel({
     }
   };
 
+  const handleRemovePlayer = async (teamId, teamName) => {
+    if (!isAdmin) return;
+    const confirmed = window.confirm(
+      `ARE YOU SURE you want to remove squad "${teamName || teamId}" (${teamId}) from the active match?\n\nThis will immediately disconnect them from the session and remove them from the live leaderboard.`
+    );
+    if (!confirmed) return;
+
+    try {
+      const res = await fetch('/api/game-action', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-key': adminKey
+        },
+        body: JSON.stringify({
+          action: 'ADMIN_REMOVE_PLAYER',
+          sessionId,
+          teamId,
+          payload: {
+            teamId,
+            reason: 'Removed by administrator via Admin Console'
+          }
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        playSuccess();
+        fetchLiveLeaderboard();
+        if (onAdminAction) {
+          onAdminAction('REFRESH_STATE');
+        }
+      } else {
+        playError();
+        alert(data.message || 'Failed to remove player.');
+      }
+    } catch (err) {
+      playError();
+      alert('Network error while removing player: ' + err.message);
+    }
+  };
+
   useEffect(() => {
     if (activeTab === 'LEADERBOARD' && isAdmin) {
       fetchLiveLeaderboard();
-      const interval = setInterval(fetchLiveLeaderboard, 4000);
-      return () => clearInterval(interval);
+      const interval = setInterval(fetchLiveLeaderboard, 8000);
+      const handleVisChange = () => {
+        if (document.visibilityState === 'visible') fetchLiveLeaderboard();
+      };
+      document.addEventListener('visibilitychange', handleVisChange);
+      return () => {
+        clearInterval(interval);
+        document.removeEventListener('visibilitychange', handleVisChange);
+      };
     }
   }, [activeTab, isAdmin, sessionId]);
 
@@ -542,58 +591,74 @@ export default function AdminPanel({
 
                   {/* Leaderboard Table */}
                   <div className="space-y-2 max-h-[50vh] overflow-y-auto pr-1">
-                    {(liveLeaderboard.length > 0 ? liveLeaderboard : (gameState?.leaderboard || [])).map((team, idx) => (
-                      <div
-                        key={team.teamId}
-                        className={`p-3 rounded-xl border flex flex-wrap items-center justify-between gap-3 text-xs font-mono ${
-                          idx === 0 ? 'bg-amber-950/30 border-amber-500/80 shadow-sm shadow-amber-950' :
-                          idx === 1 ? 'bg-slate-800/40 border-slate-600' :
-                          idx === 2 ? 'bg-amber-900/10 border-amber-800/40' :
-                          'bg-slate-900/60 border-slate-800'
-                        }`}
-                      >
-                        <div className="flex items-center gap-3">
-                          <span className="w-7 h-7 rounded-lg bg-slate-950 border border-slate-700 flex items-center justify-center font-bold text-amber-400 shrink-0">
-                            #{team.rank || idx + 1}
-                          </span>
-                          <div>
-                            <div className="font-bold text-white flex items-center gap-2">
-                              <span>{team.teamName}</span>
-                              <span className="text-[10px] text-slate-500">({team.teamId})</span>
-                            </div>
-                            <div className="text-[10px] text-slate-400 flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
-                              <span className="text-cyan-300 font-bold">Round/Stage: {team.currentRound || (team.completedLevels || 0) + 1} / 5</span>
-                              <span>•</span>
-                              <span>Stages Completed: {team.completedLevels || 0}</span>
-                              <span>•</span>
-                              <span className="text-amber-300 font-bold flex items-center gap-1">
-                                <Clock className="w-3 h-3" /> Time: {team.timeFormatted || '0s'}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="text-right flex items-center gap-3 ml-auto">
-                          <div>
-                            <div className="font-black text-sm text-emerald-400">
-                              +{team.score} PTS
-                            </div>
-                            <div className="flex items-center justify-end gap-1.5 mt-0.5">
-                              {team.hasSubmitted && (
-                                <span className="text-[9px] px-1.5 py-0.5 rounded font-bold uppercase bg-cyan-950 text-cyan-300 border border-cyan-800">
-                                  SUBMITTED ({team.accusationScore ?? 0}/5)
-                                </span>
-                              )}
-                              <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${
-                                team.isEliminated ? 'bg-rose-950 text-rose-400' : 'bg-emerald-950 text-emerald-400'
-                              }`}>
-                                {team.completionStatus || 'ACTIVE'}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
+                    {(liveLeaderboard.length === 0 && (!gameState?.leaderboard || gameState.leaderboard.length === 0)) ? (
+                      <div className="text-center py-10 text-slate-500 text-xs">
+                        No active players yet.
                       </div>
-                    ))}
+                    ) : (
+                      (liveLeaderboard.length > 0 ? liveLeaderboard : (gameState?.leaderboard || [])).map((team, idx) => (
+                        <div
+                          key={team.teamId}
+                          className={`p-3 rounded-xl border flex flex-wrap items-center justify-between gap-3 text-xs font-mono ${
+                            idx === 0 ? 'bg-amber-950/30 border-amber-500/80 shadow-sm shadow-amber-950' :
+                            idx === 1 ? 'bg-slate-800/40 border-slate-600' :
+                            idx === 2 ? 'bg-amber-900/10 border-amber-800/40' :
+                            'bg-slate-900/60 border-slate-800'
+                          }`}
+                        >
+                          <div className="flex items-center gap-3">
+                            <span className="w-7 h-7 rounded-lg bg-slate-950 border border-slate-700 flex items-center justify-center font-bold text-amber-400 shrink-0">
+                              #{team.rank || idx + 1}
+                            </span>
+                            <div>
+                              <div className="font-bold text-white flex items-center gap-2">
+                                <span>{team.teamName}</span>
+                                <span className="text-[10px] text-slate-500">({team.teamId})</span>
+                              </div>
+                              <div className="text-[10px] text-slate-400 flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
+                                <span className="text-cyan-300 font-bold">Round/Stage: {team.currentRound || (team.completedLevels || 0) + 1} / 5</span>
+                                <span>•</span>
+                                <span>Stages Completed: {team.completedLevels || 0}</span>
+                                <span>•</span>
+                                <span className="text-amber-300 font-bold flex items-center gap-1">
+                                  <Clock className="w-3 h-3" /> Time: {team.timeFormatted || '0s'}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="text-right flex items-center gap-3 ml-auto">
+                            <div>
+                              <div className="font-black text-sm text-emerald-400">
+                                +{team.score} PTS
+                              </div>
+                              <div className="flex items-center justify-end gap-1.5 mt-0.5">
+                                {team.hasSubmitted && (
+                                  <span className="text-[9px] px-1.5 py-0.5 rounded font-bold uppercase bg-cyan-950 text-cyan-300 border border-cyan-800">
+                                    SUBMITTED ({team.accusationScore ?? 0}/5)
+                                  </span>
+                                )}
+                                <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${
+                                  team.isEliminated ? 'bg-rose-950 text-rose-400' : 'bg-emerald-950 text-emerald-400'
+                                }`}>
+                                  {team.completionStatus || 'ACTIVE'}
+                                </span>
+                                {!team.isEliminated && team.completionStatus !== 'ELIMINATED' && (
+                                  <button
+                                    onClick={() => handleRemovePlayer(team.teamId, team.teamName)}
+                                    className="ml-2 px-2 py-0.5 rounded bg-rose-950 hover:bg-rose-900 border border-rose-800 text-rose-300 text-[10px] flex items-center gap-1 cursor-pointer transition-colors"
+                                    title={`Remove squad ${team.teamName}`}
+                                  >
+                                    <Trash2 className="w-2.5 h-2.5" />
+                                    Kick
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </div>
               </div>
@@ -937,35 +1002,59 @@ export default function AdminPanel({
                   <span>Squad Telemetry & Active Stations:</span>
                   <span className="text-[11px] text-slate-500">Auto-Synced Across Sessions</span>
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
-                  {(gameState?.teams || []).map(t => {
-                    const isSelf = t.id === myTeam?.id;
-                    return (
-                      <div
-                        key={t.id}
-                        className={`p-3 rounded-xl border transition-all ${
-                          isSelf
-                            ? 'bg-cyan-950/40 border-cyan-500 shadow-md shadow-cyan-950'
-                            : 'bg-slate-950 border-slate-800 text-slate-200'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="font-bold font-mono text-cyan-400">{t.id}</span>
-                          <span className="text-[10px] px-1.5 py-0.2 rounded font-bold uppercase bg-slate-900 border border-slate-800 text-slate-300 font-mono">
-                            {isSelf ? activeSystemNo : `SYS-${t.id}`}
-                          </span>
+                {(gameState?.teams || []).length === 0 ? (
+                  <div className="text-center py-8 text-slate-500 text-xs">
+                    No active stations registered.
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
+                    {(gameState?.teams || []).map(t => {
+                      const isSelf = t.id === myTeam?.id;
+                      const isRemoved = Boolean(t.isEliminated || t.status === 'REMOVED_BY_ADMIN');
+                      return (
+                        <div
+                          key={t.id}
+                          className={`p-3 rounded-xl border transition-all flex flex-col justify-between ${
+                            isSelf
+                              ? 'bg-cyan-950/40 border-cyan-500 shadow-md shadow-cyan-950'
+                              : isRemoved
+                              ? 'bg-rose-950/20 border-rose-900/50 opacity-60 text-slate-400'
+                              : 'bg-slate-950 border-slate-800 text-slate-200'
+                          }`}
+                        >
+                          <div>
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="font-bold font-mono text-cyan-400">{t.id}</span>
+                              <span className="text-[10px] px-1.5 py-0.2 rounded font-bold uppercase bg-slate-900 border border-slate-800 text-slate-300 font-mono">
+                                {t.systemNo || (isSelf ? activeSystemNo : `SYS-${t.id}`)}
+                              </span>
+                            </div>
+                            <div className="font-semibold text-white text-xs truncate" title={t.name}>{t.name}</div>
+                            <div className="flex items-center justify-between text-[11px] text-slate-400 mt-2">
+                              <span className={t.integrity > 50 ? 'text-emerald-400' : 'text-rose-400'}>
+                                Int: {t.integrity}%
+                              </span>
+                              <span className="font-bold text-emerald-400">+{t.score} PTS</span>
+                            </div>
+                          </div>
+
+                          {!isRemoved && (
+                            <div className="mt-2.5 pt-2 border-t border-slate-800/80 flex items-center justify-end">
+                              <button
+                                onClick={() => handleRemovePlayer(t.id, t.name)}
+                                className="px-2 py-0.5 rounded bg-rose-950/80 hover:bg-rose-900 border border-rose-800/80 text-[10px] text-rose-300 flex items-center gap-1 cursor-pointer transition-colors"
+                                title={`Remove squad ${t.name}`}
+                              >
+                                <Trash2 className="w-2.5 h-2.5" />
+                                Remove
+                              </button>
+                            </div>
+                          )}
                         </div>
-                        <div className="font-semibold text-white text-xs truncate">{t.name}</div>
-                        <div className="flex items-center justify-between text-[11px] text-slate-400 mt-2">
-                          <span className={t.integrity > 50 ? 'text-emerald-400' : 'text-rose-400'}>
-                            Int: {t.integrity}%
-                          </span>
-                          <span className="font-bold text-emerald-400">+{t.score} PTS</span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
 

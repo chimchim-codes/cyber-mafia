@@ -75,9 +75,9 @@ function setupSocketHandlers(io, gameEngine) {
     });
 
     // Solve Civilian CTF Lab
-    socket.on('solve_civilian_challenge', ({ challengeId, answer }) => {
+    socket.on('solve_civilian_challenge', ({ challengeId, answer, code }) => {
       const teamId = socket.data.teamId;
-      const result = gameEngine.solveCivilianChallenge(teamId, challengeId, answer);
+      const result = gameEngine.solveCivilianChallenge(teamId, challengeId, answer, code);
       socket.emit('ctf_lab_result', result);
     });
 

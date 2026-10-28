@@ -149,20 +149,36 @@ export default function App() {
 
   // Restore player details & unlocked evidence
   const [myTeam, setMyTeam] = useState(() => {
-    const savedTeamId = localStorage.getItem('cyber_mafia_team_id') || 'S01';
+    const savedTeamId = localStorage.getItem('cyber_mafia_team_id') || 'SQ_01';
     const savedPlayerName = localStorage.getItem('cyber_mafia_player_name') || '';
+    const savedTeamName = localStorage.getItem('cyber_mafia_team_name') || savedPlayerName;
     const savedState = loadSavedGameState();
     const targetSuspect = INITIAL_SUSPECTS.find(s => s.id === savedTeamId) || INITIAL_SUSPECTS[0];
     const unlockedBatches = savedState?.unlockedEvidenceBatches || [1];
 
     return {
       ...targetSuspect,
+      id: savedTeamId,
+      name: savedTeamName || targetSuspect.name,
       playerName: savedPlayerName || targetSuspect.name,
-      name: savedPlayerName ? `${targetSuspect.name} [${savedPlayerName}]` : targetSuspect.name,
       score: savedState?.score || 0,
       visibleEvidence: ALL_EVIDENCE_FILES.filter(e => unlockedBatches.includes(e.batch))
     };
   });
+
+  // Handle player removal by administrator
+  const handlePlayerRemovedByAdmin = (reason) => {
+    try {
+      localStorage.removeItem('cyber_mafia_team_id');
+      localStorage.removeItem('cyber_mafia_player_name');
+      localStorage.removeItem('cyber_mafia_team_name');
+      localStorage.removeItem('cyber_mafia_start_time');
+      localStorage.removeItem('cyber_mafia_game_state');
+    } catch (_) {}
+    setGameState(createInitialGameState());
+    setMyTeam(null);
+    alert(`MATCH TERMINATED:\n\n${reason || 'You have been removed from the session by an administrator.'}\n\nYou have been returned to the station lobby.`);
+  };
 
   // Track how many minutes/seconds the game has taken so far
   const [elapsedSeconds, setElapsedSeconds] = useState(() => {
@@ -273,6 +289,10 @@ export default function App() {
       });
       if (res.ok) {
         const state = await res.json();
+        if (state.myTeam && (state.myTeam.status === 'REMOVED_BY_ADMIN' || (state.myTeam.is_eliminated && state.myTeam.removal_reason))) {
+          handlePlayerRemovedByAdmin(state.myTeam.removal_reason);
+          return;
+        }
         setGameState(prev => mergeServerStateWithLocal(state, prev));
         if (state.myTeam) {
           setMyTeam(prev => ({ ...prev, ...state.myTeam }));
@@ -640,6 +660,37 @@ export default function App() {
     }
   }, [gameState?.phase, gameState?.isPaused]);
 
+  // Periodic heartbeat to maintain active player status and detect admin kicks
+  useEffect(() => {
+    if (!myTeam?.id || gameState?.phase === 'LOBBY' || isAdmin) return;
+
+    const sendHeartbeat = async () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      try {
+        const res = await safeApiFetch('/api/session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'HEARTBEAT',
+            sessionId,
+            teamId: myTeam.id,
+            playerName: myTeam.playerName,
+            teamName: myTeam.name
+          })
+        }, 5000);
+        if (res && res.ok) {
+          const data = await res.json();
+          if (data && (data.removed || data.status === 'REMOVED_BY_ADMIN' || data.code === 'REMOVED_BY_ADMIN')) {
+            handlePlayerRemovedByAdmin(data.reason || data.message);
+          }
+        }
+      } catch (_) {}
+    };
+
+    const interval = setInterval(sendHeartbeat, 15000);
+    return () => clearInterval(interval);
+  }, [myTeam?.id, myTeam?.name, myTeam?.playerName, gameState?.phase, isAdmin, sessionId]);
+
   // Handler: Join Team (Works standalone and syncs over API/socket)
   const handleJoinTeam = async (playerName, teamId, systemNo, teamName) => {
     const finalSystemNo = systemNo || localStorage.getItem('cyber_mafia_system_no') || 'SYS-01';
@@ -704,7 +755,9 @@ export default function App() {
           action: 'JOIN_TEAM',
           sessionId,
           teamId,
-          playerName
+          playerName,
+          teamName: finalTeamName,
+          systemNo: finalSystemNo
         })
       });
       if (res && res.ok) {
@@ -885,45 +938,44 @@ export default function App() {
     }
   };
 
-  // Handler: Solve CTF / Python Challenge
-  const handleSolveChallenge = async (challengeId, answer, stageNumber) => {
+  // Handler: Solve CTF / Python Challenge (Authoritative Backend Validation)
+  const handleSolveChallenge = async (challengeId, answer, stageNumber, code = null) => {
     playClick();
     const chal = PYTHON_CHALLENGES.find(c => c.id === challengeId);
-    if (!chal) return;
+    if (!chal) return { success: false, message: 'Challenge not found' };
+
+    const actualCode = code || (typeof stageNumber === 'string' ? stageNumber : null);
+    const actualStage = typeof stageNumber === 'number' ? stageNumber : (chal.stageNumber || 1);
 
     if (socket && socket.connected) {
-      socket.emit('solve_civilian_challenge', { challengeId, answer, stageNumber });
+      socket.emit('solve_civilian_challenge', { challengeId, answer, stageNumber: actualStage, code: actualCode });
     }
 
+    let apiResult = null;
     try {
-      await safeApiFetch('/api/game-action', {
+      apiResult = await safeApiFetch('/api/game-action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'SOLVE_CIVILIAN_CHALLENGE',
           sessionId,
           teamId: myTeam?.id,
-          payload: { challengeId, answer, stageNumber }
+          payload: { challengeId, answer, stageNumber: actualStage, code: actualCode }
         })
-      }, 5000);
+      }, 7000);
     } catch (e) {
-      // offline fallback handled below
+      console.warn('[handleSolveChallenge] API error:', e);
     }
 
-    // Client-side validation fallback
-    const cleanAnswer = (answer || '').trim().toLowerCase();
-    const isExpected = cleanAnswer === chal.expected.toLowerCase();
-    const isAlternative = chal.acceptedAlternatives?.some(
-      alt => alt.toLowerCase() === cleanAnswer
-    );
-
-    if (isExpected || isAlternative) {
+    // Only unlock and advance progress if authoritative backend verified and accepted the solution
+    if (apiResult && apiResult.success && apiResult.isVerified !== false) {
       playSuccess();
-      const currentStg = chal.stageNumber || stageNumber || 1;
+      const currentStg = chal.stageNumber || actualStage || 1;
       const nextStage = Math.min(currentStg + 1, 5);
       const nextBatch = Math.min(chal.unlocksEvidenceBatch || (currentStg + 1), 6);
       const points = chal.rewardScore || 100;
       const newScore = (myTeam?.score || 0) + points;
+      const verifiedOutput = apiResult.cleanOutput || answer || 'VERIFIED';
 
       showToast(`Stage ${currentStg} Solved! +${points} PTS. Evidence Batch ${nextBatch} Unlocked!`, 'SUCCESS');
 
@@ -952,7 +1004,7 @@ export default function App() {
 
         const next = {
           ...prev,
-          currentStage: nextStage,
+          currentStage: Math.max(prev?.currentStage || 1, nextStage),
           completedStages: newCompleted,
           unlockedEvidenceBatches: newBatches,
           teams: updatedTeams,
@@ -963,7 +1015,7 @@ export default function App() {
               timestamp: new Date().toLocaleTimeString(),
               type: 'FORENSIC_SOLVE',
               source: `STAGE_${currentStg}`,
-              message: `Stage ${currentStg} (${chal.title}) solved! Output "${answer}" verified. Unlocked Evidence Batch ${nextBatch}. +${points} PTS.`
+              message: `Stage ${currentStg} (${chal.title}) solved! Output "${verifiedOutput}" verified. Unlocked Evidence Batch ${nextBatch}. +${points} PTS.`
             },
             ...(prev?.systemLogs || [])
           ]
@@ -984,7 +1036,7 @@ export default function App() {
         systemNo: myTeam?.systemNo || localStorage.getItem('cyber_mafia_system_no') || 'SYS-DEFAULT',
         teamId: myTeam?.id || 'C01',
         teamName: myTeam?.name || 'Cyber Alpha',
-        message: `Stage ${currentStg} (${chal.title}) solved! Verified answer: "${answer}". +${points} PTS awarded.`
+        message: `Stage ${currentStg} (${chal.title}) solved! Verified answer: "${verifiedOutput}". +${points} PTS awarded.`
       };
       setAuditLogs(prev => {
         const updated = [solveAudit, ...prev];
@@ -993,9 +1045,26 @@ export default function App() {
         } catch (e) {}
         return updated;
       });
+
+      return {
+        success: true,
+        isVerified: true,
+        cleanOutput: verifiedOutput,
+        output: apiResult.output || `[✔] Verified: Stage ${currentStg} cleared!`,
+        message: apiResult.message || `Stage ${currentStg} Solved! +${points} PTS.`
+      };
     } else {
       playError();
-      showToast('Incorrect solution. Inspect the evidence and try again.', 'ERROR');
+      const failMsg = apiResult?.message || apiResult?.feedback || 'Code failed authoritative server validation.';
+      showToast(failMsg, 'ERROR');
+      return {
+        success: false,
+        isVerified: false,
+        cleanOutput: null,
+        output: apiResult?.output || '> Validation rejected by authoritative server.',
+        error: apiResult?.error || 'Validation failed',
+        feedback: failMsg
+      };
     }
   };
 
