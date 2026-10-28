@@ -4,7 +4,7 @@ import { io } from 'socket.io-client';
 const SocketContext = createContext(null);
 
 const SOCKET_URL = import.meta.env.VITE_API_URL || (
-  window.location.port === '5173' ? 'http://localhost:5001' : window.location.origin
+  typeof window !== 'undefined' && window.location.port === '5001' ? window.location.origin : 'http://localhost:5001'
 );
 
 export function SocketProvider({ children }) {
