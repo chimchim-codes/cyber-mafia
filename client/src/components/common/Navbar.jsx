@@ -6,13 +6,19 @@ import {
   Headphones,
   BarChart3,
   User,
-  LogOut,
   Shield,
   Sparkles,
 } from 'lucide-react';
 
 export default function Navbar({ currentView, setCurrentView, onOpenLogin }) {
-  const { user, isAuthenticated, isAdmin, isAgent, logout } = useAuth();
+  const { user, switchRole } = useAuth();
+
+  const handleSelectRole = (role) => {
+    switchRole(role);
+    if (role === 'admin') setCurrentView('admin');
+    else if (role === 'agent') setCurrentView('agent');
+    else setCurrentView('store');
+  };
 
   return (
     <header className="h-16 bg-white border-b border-slate-200/90 px-4 sm:px-6 lg:px-8 flex items-center justify-between sticky top-0 z-30 shadow-2xs">
@@ -36,13 +42,15 @@ export default function Navbar({ currentView, setCurrentView, onOpenLogin }) {
           </div>
         </div>
 
-        {/* View Switcher Tabs */}
+        {/* View Switcher Tabs (Seamless 1-Click Navigation, No Password) */}
         <nav className="hidden md:flex items-center gap-1 bg-slate-100 p-1 rounded-xl text-xs font-semibold">
           <button
-            onClick={() => setCurrentView('store')}
+            onClick={() => {
+              setCurrentView('store');
+            }}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
               currentView === 'store'
-                ? 'bg-white text-blue-600 shadow-2xs'
+                ? 'bg-white text-blue-600 shadow-2xs font-bold'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
@@ -52,30 +60,26 @@ export default function Navbar({ currentView, setCurrentView, onOpenLogin }) {
 
           <button
             onClick={() => {
-              if (!isAuthenticated) onOpenLogin();
-              else setCurrentView('agent');
+              setCurrentView('agent');
             }}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
               currentView === 'agent'
-                ? 'bg-white text-blue-600 shadow-2xs'
+                ? 'bg-white text-blue-600 shadow-2xs font-bold'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             <Headphones className="w-3.5 h-3.5" />
             <span>Agent Workspace</span>
-            {isAgent && (
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            )}
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
           </button>
 
           <button
             onClick={() => {
-              if (!isAuthenticated || !isAdmin) onOpenLogin();
-              else setCurrentView('admin');
+              setCurrentView('admin');
             }}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
               currentView === 'admin'
-                ? 'bg-white text-blue-600 shadow-2xs'
+                ? 'bg-white text-blue-600 shadow-2xs font-bold'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
@@ -85,7 +89,7 @@ export default function Navbar({ currentView, setCurrentView, onOpenLogin }) {
         </nav>
       </div>
 
-      {/* Right Controls */}
+      {/* Right Controls: Quick 1-Click Persona Switcher */}
       <div className="flex items-center gap-2">
         {/* Mobile View Selector */}
         <div className="flex md:hidden items-center gap-1">
@@ -97,20 +101,14 @@ export default function Navbar({ currentView, setCurrentView, onOpenLogin }) {
             <ShoppingBag className="w-4 h-4" />
           </button>
           <button
-            onClick={() => {
-              if (!isAuthenticated) onOpenLogin();
-              else setCurrentView('agent');
-            }}
+            onClick={() => setCurrentView('agent')}
             className={`p-2 rounded-lg ${currentView === 'agent' ? 'bg-blue-50 text-blue-600' : 'text-slate-600'}`}
             title="Agent Workspace"
           >
             <Headphones className="w-4 h-4" />
           </button>
           <button
-            onClick={() => {
-              if (!isAuthenticated || !isAdmin) onOpenLogin();
-              else setCurrentView('admin');
-            }}
+            onClick={() => setCurrentView('admin')}
             className={`p-2 rounded-lg ${currentView === 'admin' ? 'bg-blue-50 text-blue-600' : 'text-slate-600'}`}
             title="Admin Portal"
           >
@@ -118,35 +116,45 @@ export default function Navbar({ currentView, setCurrentView, onOpenLogin }) {
           </button>
         </div>
 
-        {isAuthenticated ? (
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-2 px-2.5 py-1 bg-slate-50 border border-slate-200 rounded-xl text-xs">
-              <div className="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-[11px]">
-                {user.name?.[0]?.toUpperCase()}
-              </div>
-              <div className="hidden sm:block text-left">
-                <p className="font-semibold text-slate-800 leading-tight">{user.name}</p>
-                <p className="text-[10px] text-slate-400 capitalize">{user.role}</p>
-              </div>
-            </div>
-
-            <button
-              onClick={logout}
-              className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-colors cursor-pointer"
-              title="Sign Out"
-            >
-              <LogOut className="w-4 h-4" />
-            </button>
-          </div>
-        ) : (
+        {/* 1-Click Role Switcher Pill */}
+        <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl text-xs font-semibold">
+          <span className="text-[10px] text-slate-500 uppercase tracking-wider px-2 font-bold hidden lg:inline">
+            Role:
+          </span>
           <button
-            onClick={onOpenLogin}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-xl shadow-xs cursor-pointer transition-colors"
+            type="button"
+            onClick={() => handleSelectRole('customer')}
+            className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer text-xs ${
+              currentView === 'store'
+                ? 'bg-white text-slate-900 shadow-2xs font-bold'
+                : 'text-slate-500 hover:text-slate-900'
+            }`}
           >
-            <Shield className="w-3.5 h-3.5 text-blue-400" />
-            <span>Staff Login</span>
+            Customer
           </button>
-        )}
+          <button
+            type="button"
+            onClick={() => handleSelectRole('agent')}
+            className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer text-xs ${
+              currentView === 'agent'
+                ? 'bg-blue-600 text-white shadow-2xs font-bold'
+                : 'text-slate-500 hover:text-slate-900'
+            }`}
+          >
+            Agent
+          </button>
+          <button
+            type="button"
+            onClick={() => handleSelectRole('admin')}
+            className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer text-xs ${
+              currentView === 'admin'
+                ? 'bg-slate-900 text-white shadow-2xs font-bold'
+                : 'text-slate-500 hover:text-slate-900'
+            }`}
+          >
+            Admin
+          </button>
+        </div>
       </div>
     </header>
   );

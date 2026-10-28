@@ -11,15 +11,21 @@ import LoginModal from './components/auth/LoginModal';
 function AppContent() {
   const [currentView, setCurrentView] = useState('store'); // 'store' | 'agent' | 'admin'
   const [isLoginOpen, setIsLoginOpen] = useState(false);
-  const { isAuthenticated, isAgent, isAdmin } = useAuth();
+  const { switchRole } = useAuth();
+
+  const handleViewChange = (view) => {
+    setCurrentView(view);
+    if (view === 'admin') {
+      switchRole('admin');
+    } else if (view === 'agent') {
+      switchRole('agent');
+    }
+  };
 
   const handleLoginSuccess = (loggedInUser) => {
-    const targetUser = loggedInUser || user;
-    if (targetUser?.role === 'admin') {
-      setCurrentView('admin');
-    } else if (targetUser?.role === 'agent') {
-      setCurrentView('agent');
-    }
+    const role = loggedInUser?.role;
+    if (role === 'admin') setCurrentView('admin');
+    else if (role === 'agent') setCurrentView('agent');
   };
 
   return (
@@ -27,7 +33,7 @@ function AppContent() {
       {/* Top Global Navigation Bar */}
       <Navbar
         currentView={currentView}
-        setCurrentView={setCurrentView}
+        setCurrentView={handleViewChange}
         onOpenLogin={() => setIsLoginOpen(true)}
       />
 
@@ -41,42 +47,12 @@ function AppContent() {
           </>
         )}
 
-        {currentView === 'agent' && (
-          isAuthenticated ? (
-            <AgentDashboard />
-          ) : (
-            <div className="p-12 text-center text-slate-500 max-w-md mx-auto space-y-4">
-              <h2 className="text-lg font-bold text-slate-800">Agent Access Restricted</h2>
-              <p className="text-xs">Please sign in as a support agent to view and respond to live tickets.</p>
-              <button
-                onClick={() => setIsLoginOpen(true)}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold cursor-pointer shadow-xs"
-              >
-                Sign In to Agent Desk
-              </button>
-            </div>
-          )
-        )}
+        {currentView === 'agent' && <AgentDashboard />}
 
-        {currentView === 'admin' && (
-          isAuthenticated && isAdmin ? (
-            <AdminDashboard />
-          ) : (
-            <div className="p-12 text-center text-slate-500 max-w-md mx-auto space-y-4">
-              <h2 className="text-lg font-bold text-slate-800">Admin Access Restricted</h2>
-              <p className="text-xs">Administrator privileges are required to view backend analytics and manage knowledge base FAQs.</p>
-              <button
-                onClick={() => setIsLoginOpen(true)}
-                className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold cursor-pointer shadow-xs"
-              >
-                Sign In as Admin
-              </button>
-            </div>
-          )
-        )}
+        {currentView === 'admin' && <AdminDashboard />}
       </main>
 
-      {/* Login Modal */}
+      {/* Login / Persona Switcher Modal */}
       <LoginModal
         isOpen={isLoginOpen}
         onClose={() => setIsLoginOpen(false)}
