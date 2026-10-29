@@ -76,9 +76,9 @@ export default function LandingLobby({ gameState, onJoinTeam, onStartGame, isAdm
       onJoinTeam(trimmedSquadName, finalTeamId, trimmedSystemNo, trimmedSquadName);
     }
 
-    setTimeout(() => {
-      if (onStartGame) onStartGame();
-    }, 150);
+    if (onStartGame) {
+      onStartGame();
+    }
   };
 
   return (

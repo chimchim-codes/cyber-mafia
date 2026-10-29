@@ -114,8 +114,15 @@ export async function safeApiFetch(url, options = {}, timeoutMs = 7000) {
 function mergeServerStateWithLocal(serverState, prevState) {
   if (!serverState) return prevState;
 
-  const isServerLobbyOrReset = serverState?.phase === 'LOBBY' || serverState?.status === 'NOT_STARTED';
-  const isPlayingCivilian = !isServerLobbyOrReset && (prevState?.phase === 'CIVILIAN_PHASE' || serverState?.phase === 'CIVILIAN_PHASE');
+  // Check if dynamic squad was wiped by an administrator reset
+  const isSquadWipedByReset = prevState?.phase === 'CIVILIAN_PHASE' &&
+    prevState?.myTeam?.id &&
+    serverState?.phase === 'LOBBY' &&
+    !serverState?.myTeam &&
+    !serverState?.teams?.some(t => t.id === prevState.myTeam.id);
+
+  // A player is actively investigating if local state or server state is in CIVILIAN_PHASE
+  const isPlayingCivilian = !isSquadWipedByReset && (prevState?.phase === 'CIVILIAN_PHASE' || serverState?.phase === 'CIVILIAN_PHASE');
 
   const challenges = (serverState.challenges && Array.isArray(serverState.challenges) && serverState.challenges.length > 0)
     ? serverState.challenges
@@ -138,7 +145,7 @@ function mergeServerStateWithLocal(serverState, prevState) {
     ...prevState,
     ...serverState,
     phase: isPlayingCivilian ? 'CIVILIAN_PHASE' : (serverState.phase || prevState?.phase || 'LOBBY'),
-    status: isPlayingCivilian ? (serverState.status || 'RUNNING') : (serverState.status || prevState?.status || 'NOT_STARTED'),
+    status: isPlayingCivilian ? (serverState.status === 'PAUSED' ? 'PAUSED' : 'RUNNING') : (serverState.status || prevState?.status || 'NOT_STARTED'),
     isPaused: Boolean(serverState.isPaused),
     challenges,
     currentStage,
@@ -1428,7 +1435,7 @@ export default function App() {
   };
 
   // Render Lobby if not started
-  if (!gameState || gameState.phase === 'LOBBY' || gameState.status === 'NOT_STARTED') {
+  if (!gameState || gameState.phase === 'LOBBY') {
     return (
       <>
         <LandingLobby

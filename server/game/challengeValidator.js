@@ -111,14 +111,14 @@ const AUTHORITATIVE_TEST_SUITES = {
     expected: 'ACCESS_GRANTED',
     acceptedAlternatives: ['ACCESS_GRANTED', '"ACCESS_GRANTED"'],
     inputVars: ['user', 'code'],
-    requiredSubstrings: ['check_access', 'and', '&&', 'authorized_users'],
-    requiredInputs: ['check_access']
+    requiredSubstrings: ['check_access', 'and', '&&', 'authorized_users', 'valid_code', 'sec-7702', 'if', 'return'],
+    requiredInputs: []
   },
   'CHAL-PY-5': {
     expected: 'elena_ward',
     acceptedAlternatives: ['elena_ward', '"elena_ward"'],
     inputVars: ['auth_logs'],
-    requiredSubstrings: ['200', 'max', 'sort', 'timestamp', '>', '[-1]'],
+    requiredSubstrings: ['200', 'max', 'sort', 'timestamp', '>', '[-1]', 'reversed', 'filter', 'for '],
     requiredInputs: ['auth_logs']
   }
 };

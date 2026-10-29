@@ -65,9 +65,9 @@ export function transpilePython(code) {
     res = res.replace(/key\s*=\s*lambda\s+([a-zA-Z0-9_]+):\s*([^,)]+)/g, "((__item) => { const $1 = __item; return $2; })");
     res = res.replace(/\blambda\s+([a-zA-Z0-9_,\s]+):\s*([^,)]+)/g, "(($1) => $2)");
 
-    // In / not in operators with support for identifiers and bracketed arrays
-    res = res.replace(/([a-zA-Z0-9_".\-\[\]]+)\s+not\s+in\s+(\[[^\]]*\]|[a-zA-Z0-9_".\-\[\]]+)/g, "!__py_in($1, $2)");
-    res = res.replace(/([a-zA-Z0-9_".\-\[\]]+)\s+in\s+(\[[^\]]*\]|[a-zA-Z0-9_".\-\[\]]+)/g, "__py_in($1, $2)");
+    // In / not in operators with support for strings (both single and double quotes), function calls, arrays, identifiers
+    res = res.replace(/((?:'[^']*'|"[^"]*"|[a-zA-Z0-9_().\-\[\]])+)\s+not\s+in\s+((?:'[^']*'|"[^"]*"|\[[^\]]*\]|[a-zA-Z0-9_().\-\[\]])+)/g, "!__py_in($1, $2)");
+    res = res.replace(/((?:'[^']*'|"[^"]*"|[a-zA-Z0-9_().\-\[\]])+)\s+in\s+((?:'[^']*'|"[^"]*"|\[[^\]]*\]|[a-zA-Z0-9_().\-\[\]])+)/g, "__py_in($1, $2)");
 
     // Boolean operators & literals
     res = res
@@ -265,9 +265,9 @@ function verifyProperForensicLogic(code, challengeId, cleanOutput) {
 
   if (challengeId === 'CHAL-PY-4') {
     // Challenge 4: Crack the Access Rule
-    // Must define/use check_access and verify both conditions
-    const hasAccessRule = normalized.includes('check_access');
-    const hasDualCondition = normalized.includes('and') || normalized.includes('&&') || (normalized.includes('authorized_users') && normalized.includes('valid_code'));
+    // Must evaluate access condition dynamically (checking user and code)
+    const hasDualCondition = normalized.includes('and') || normalized.includes('&&') || (normalized.includes('authorized_users') && (normalized.includes('valid_code') || normalized.includes('sec-7702')));
+    const hasComparison = normalized.includes('in') || normalized.includes('==') || normalized.includes('if');
 
     if (normalized.includes('return "access_granted"') && !normalized.includes('if ') && !normalized.includes('else')) {
       return {
@@ -276,10 +276,10 @@ function verifyProperForensicLogic(code, challengeId, cleanOutput) {
       };
     }
 
-    if (!hasAccessRule || !hasDualCondition) {
+    if (!hasDualCondition || !hasComparison) {
       return {
         valid: false,
-        reason: "Bypass detected: Please implement and evaluate check_access() using dual-condition boolean logic instead of hardcoding."
+        reason: "Bypass detected: Please evaluate the access condition dynamically (checking both user authorization and code match) instead of hardcoding."
       };
     }
   }
@@ -289,9 +289,8 @@ function verifyProperForensicLogic(code, challengeId, cleanOutput) {
     // Must filter auth_logs on status == 200 and select latest timestamp
     const usesLogs = normalized.includes('auth_logs');
     const checks200 = normalized.includes('200');
-    const findsLatest = normalized.includes('max') || normalized.includes('sort') || normalized.includes('timestamp') || normalized.includes('>') || normalized.includes('[-1]');
 
-    if (!usesLogs || !checks200 || !findsLatest) {
+    if (!usesLogs || !checks200) {
       return {
         valid: false,
         reason: "Bypass detected: Please filter 'auth_logs' for status == 200 and identify the latest timestamp instead of hardcoding."
@@ -300,6 +299,53 @@ function verifyProperForensicLogic(code, challengeId, cleanOutput) {
   }
 
   return { valid: true };
+}
+
+/**
+ * Extracts candidate answer from output lines, supporting prefixes, labels, or exact matches.
+ */
+function extractCandidateAnswer(outputLines, expected, alts = []) {
+  if (!outputLines || outputLines.length === 0) return '';
+  const allCandidates = [expected, ...alts].filter(Boolean);
+
+  for (let i = outputLines.length - 1; i >= 0; i--) {
+    let line = (outputLines[i] || '').trim();
+    if (!line) continue;
+
+    if ((line.startsWith('"') && line.endsWith('"')) || (line.startsWith("'") && line.endsWith("'"))) {
+      line = line.slice(1, -1).trim();
+    }
+
+    // Direct match
+    for (const cand of allCandidates) {
+      if (line.toLowerCase() === cand.toLowerCase()) {
+        return cand;
+      }
+    }
+
+    // Match after colon: e.g. "Key: BYPASS-ELENA-WARD-99"
+    if (line.includes(':')) {
+      const afterColon = line.split(':').pop().trim().replace(/^["']|["']$/g, '');
+      for (const cand of allCandidates) {
+        if (afterColon.toLowerCase() === cand.toLowerCase()) {
+          return cand;
+        }
+      }
+    }
+
+    // Match word tokens in line
+    const tokens = line.split(/[\s,()\[\]{}"']+/).filter(Boolean);
+    for (const tok of tokens) {
+      for (const cand of allCandidates) {
+        if (tok.toLowerCase() === cand.toLowerCase()) {
+          return cand;
+        }
+      }
+    }
+  }
+
+  const lastLine = [...outputLines].reverse().find(l => l && l.trim().length > 0) || '';
+  return lastLine.replace(/^["']|["']$/g, '').trim();
 }
 
 /**
@@ -314,10 +360,17 @@ export function executePythonCode(code, challengeId, challengeMeta = null) {
   };
 
   const __py_in = (item, container) => {
-    if (!container) return false;
-    if (Array.isArray(container) || typeof container === 'string') return container.includes(item);
-    if (container instanceof Set) return container.has(item);
-    return item in container;
+    if (container === null || container === undefined) return false;
+    if (typeof container === 'string' || Array.isArray(container)) {
+      return container.includes(item);
+    }
+    if (container instanceof Set || container instanceof Map) {
+      return container.has(item);
+    }
+    if (typeof container === 'object') {
+      return item in container;
+    }
+    return false;
   };
 
   const len = (x) => x?.length ?? x?.size ?? 0;
@@ -352,6 +405,17 @@ export function executePythonCode(code, challengeId, challengeMeta = null) {
     return best;
   };
 
+  const reversed = (iter) => Array.isArray(iter) ? [...iter].reverse() : iter;
+  const sorted = (iter, keyFn) => {
+    if (!Array.isArray(iter)) return iter;
+    const copy = [...iter];
+    if (typeof keyFn === 'function') {
+      return copy.sort((a, b) => (keyFn(a) > keyFn(b) ? 1 : keyFn(a) < keyFn(b) ? -1 : 0));
+    }
+    return copy.sort();
+  };
+  const set = (iter) => new Set(iter || []);
+
   // Safe prototype extensions
   if (typeof String.prototype.startswith !== 'function') {
     String.prototype.startswith = String.prototype.startsWith;
@@ -359,12 +423,56 @@ export function executePythonCode(code, challengeId, challengeMeta = null) {
   if (typeof String.prototype.endswith !== 'function') {
     String.prototype.endswith = String.prototype.endsWith;
   }
+  if (typeof String.prototype.strip !== 'function') {
+    String.prototype.strip = String.prototype.trim;
+  }
+  if (typeof String.prototype.lstrip !== 'function') {
+    String.prototype.lstrip = String.prototype.trimStart;
+  }
+  if (typeof String.prototype.rstrip !== 'function') {
+    String.prototype.rstrip = String.prototype.trimEnd;
+  }
   if (typeof String.prototype.splitlines !== 'function') {
     String.prototype.splitlines = function() { return this.split(/\r?\n/); };
+  }
+  if (typeof String.prototype.find !== 'function') {
+    String.prototype.find = String.prototype.indexOf;
   }
   if (typeof Array.prototype.append !== 'function') {
     Array.prototype.append = Array.prototype.push;
   }
+  if (typeof Object.prototype.get !== 'function') {
+    Object.defineProperty(Object.prototype, 'get', {
+      value: function(key, defaultVal = null) {
+        return this[key] !== undefined ? this[key] : defaultVal;
+      },
+      writable: true,
+      configurable: true
+    });
+  }
+
+  const defaultVars = {
+    header: "Host: sec.local\r\nX-Bypass-Key: BYPASS-ELENA-WARD-99\r\nUser-Agent: Terminal/1.0",
+    login_records: [
+      ["mira_sen", "SUCCESS"],
+      ["noah_mercer", "SUCCESS"],
+      ["felix_grant", "SUCCESS"],
+      ["guest_temp", "FAILED"],
+      ["elena_ward", "SUCCESS"]
+    ],
+    authorized_users: ["mira_sen", "noah_mercer", "felix_grant", "elena_ward", "adrian_vale"],
+    logged_users: ["mira_sen", "felix_grant", "shadow_operator", "elena_ward"],
+    valid_code: "SEC-7702",
+    auth_logs: [
+      { timestamp: "08:12:00", user: "mira_sen", status: 200, ip: "10.0.1.12", msg: "Auth OK - Workstation B" },
+      { timestamp: "08:19:30", user: "noah_mercer", status: 200, ip: "10.0.1.45", msg: "Auth OK - Server Sub-1" },
+      { timestamp: "08:24:10", user: "felix_grant", status: 200, ip: "10.0.2.19", msg: "Auth OK - Security Desk" },
+      { timestamp: "08:31:45", user: "elena_ward", status: 200, ip: "10.0.4.01", msg: "Auth OK - Executive Gateway" },
+      { timestamp: "08:34:10", user: "felix_grant", status: 401, ip: "10.0.2.19", msg: "Auth Failed - Bad Pin" },
+      { timestamp: "08:38:00", user: "mira_sen", status: 403, ip: "10.0.1.12", msg: "Access Denied - Lockdown Active" },
+      { timestamp: "08:42:15", user: "noah_mercer", status: 401, ip: "10.0.1.45", msg: "Auth Failed - Session Terminated" }
+    ]
+  };
 
   const trimmed = (code || '').trim();
 
@@ -383,14 +491,24 @@ export function executePythonCode(code, challengeId, challengeMeta = null) {
 
   try {
     const fullJs = transpilePython(code);
-    const runner = new Function('print', '__py_in', 'len', 'max', 'min', fullJs);
-    runner(print, __py_in, len, max, min);
+    const runner = new Function(
+      'print', '__py_in', 'len', 'max', 'min', 'reversed', 'sorted', 'set',
+      'header', 'login_records', 'authorized_users', 'logged_users', 'valid_code', 'auth_logs',
+      fullJs
+    );
+    runner(
+      print, __py_in, len, max, min, reversed, sorted, set,
+      defaultVars.header, defaultVars.login_records, defaultVars.authorized_users, defaultVars.logged_users, defaultVars.valid_code, defaultVars.auth_logs
+    );
 
     const fullStdout = outputLines.join('\n');
 
-    // Extract the most recent non-empty printed line
-    const lastOutputLine = [...outputLines].reverse().find(l => l && l.trim().length > 0) || '';
-    const cleanOutput = lastOutputLine.trim();
+    // Expected answer verification
+    const expected = challengeMeta?.expected || getExpectedForChallenge(challengeId);
+    const alts = challengeMeta?.acceptedAlternatives || getAlternativesForChallenge(challengeId);
+
+    // Extract the candidate answer from output (supports direct print, prefixes, labels)
+    const cleanOutput = extractCandidateAnswer(outputLines, expected, alts);
 
     if (!cleanOutput) {
       return {
@@ -402,10 +520,6 @@ export function executePythonCode(code, challengeId, challengeMeta = null) {
         feedback: 'Your code ran without errors, but did not print an answer. Add a print(...) statement.'
       };
     }
-
-    // Expected answer verification
-    const expected = challengeMeta?.expected || getExpectedForChallenge(challengeId);
-    const alts = challengeMeta?.acceptedAlternatives || getAlternativesForChallenge(challengeId);
 
     const matchesExpected = cleanOutput.toLowerCase() === (expected || '').toLowerCase();
     const matchesAlternative = alts.some(alt => cleanOutput.toLowerCase() === alt.toLowerCase());

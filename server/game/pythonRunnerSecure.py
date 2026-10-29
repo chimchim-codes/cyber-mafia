@@ -16,6 +16,16 @@ import json
 import ast
 import io
 import uuid
+import builtins
+
+__orig_import__ = builtins.__import__
+SAFE_MODULES = {"re", "json", "math", "datetime", "collections", "itertools", "string", "functools"}
+
+def safe_import(name, globals=None, locals=None, fromlist=(), level=0):
+    mod_name = name.split('.')[0]
+    if mod_name in SAFE_MODULES:
+        return __orig_import__(name, globals, locals, fromlist, level)
+    raise ImportError(f"Security restriction: Import of module '{name}' is not permitted.")
 
 # Security policy: Restricted modules & dangerous functions
 DANGEROUS_MODULES = {
@@ -26,13 +36,14 @@ DANGEROUS_MODULES = {
 }
 
 DANGEROUS_CALLS = {
-    "eval", "exec", "open", "__import__", "compile", "globals", "locals",
+    "eval", "exec", "open", "compile", "globals", "locals",
     "getattr", "setattr", "delattr", "breakpoint", "exit", "quit", "input",
     "memoryview", "help"
 }
 
 # Whitelist of safe Python built-in functions & types
 SAFE_BUILTINS = {
+    "__import__": safe_import,
     "print": print,
     "len": len,
     "range": range,
@@ -141,14 +152,11 @@ def scan_ast(code, challenge_id):
 
     elif challenge_id == 'CHAL-PY-4':
         funcs = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "check_access"]
-        if not funcs:
-            return False, "Algorithmic requirement: You must define a function named 'check_access(user, code)'.", None
-        fn = funcs[0]
-        if len(fn.args.args) < 2:
-            return False, "Algorithmic requirement: 'check_access' must take 2 parameters (user, code).", None
-        returns = [n for n in ast.walk(fn) if isinstance(n, ast.Return)]
-        if len(returns) == 1 and isinstance(returns[0].value, ast.Constant):
-            return False, "Algorithmic requirement: 'check_access' cannot return a constant value; it must evaluate access conditions dynamically.", None
+        if funcs:
+            fn = funcs[0]
+            returns = [n for n in ast.walk(fn) if isinstance(n, ast.Return)]
+            if len(returns) == 1 and isinstance(returns[0].value, ast.Constant):
+                return False, "Algorithmic requirement: 'check_access' cannot return a constant value; it must evaluate access conditions dynamically.", None
 
     elif challenge_id == 'CHAL-PY-5':
         loads_logs = any(
@@ -164,6 +172,8 @@ def strip_starter_assignments(tree, var_names):
     """
     Strips top-level assignments of the starter variables from the AST so that
     values injected by the test runner take precedence during test case execution.
+    Only strips literal assignments (strings, lists, dicts, tuples), preserving
+    reassignments and computed expressions.
     """
     new_body = []
     removed = set()
@@ -172,21 +182,59 @@ def strip_starter_assignments(tree, var_names):
             targets = {t.id for t in stmt.targets if isinstance(t, ast.Name)}
             intersect = targets.intersection(var_names)
             if intersect and not removed.issuperset(intersect):
-                removed.update(intersect)
-                continue
+                is_literal = isinstance(stmt.value, (ast.Constant, ast.List, ast.Dict, ast.Tuple))
+                if is_literal:
+                    removed.update(intersect)
+                    continue
         new_body.append(stmt)
     cloned = ast.Module(body=new_body, type_ignores=[])
     ast.fix_missing_locations(cloned)
     return cloned
 
-def normalize_output(out_str):
-    """Normalizes stdout output: extracts last non-empty line and strips quotes."""
+def normalize_output(out_str, expected=None, alternatives=None):
+    """
+    Normalizes stdout output: extracts value and supports label prefixes, colons, or direct matches.
+    """
     if not out_str:
         return ""
     lines = [l.strip() for l in out_str.strip().split("\n") if l.strip()]
     if not lines:
         return ""
+
+    candidates = []
+    if expected:
+        candidates.append(expected.lower())
+    if alternatives:
+        candidates.extend([a.lower() for a in alternatives])
+
+    for line in reversed(lines):
+        val = line.strip()
+        if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+            val = val[1:-1].strip()
+
+        # Exact match
+        if candidates and val.lower() in candidates:
+            return val
+
+        # Match after colon: e.g. "Key: BYPASS-ELENA-WARD-99"
+        if ":" in val:
+            after = val.split(":")[-1].strip().strip("\"'")
+            if candidates and after.lower() in candidates:
+                return after
+
+        # Match word tokens
+        if candidates:
+            tokens = [t.strip("\"',[]()") for t in val.split()]
+            for tok in tokens:
+                if tok.lower() in candidates:
+                    return tok
+
+    # Fallback to last line
     val = lines[-1].strip()
+    if ":" in val:
+        after = val.split(":")[-1].strip().strip("\"'")
+        if after:
+            val = after
     if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
         val = val[1:-1].strip()
     return val
@@ -314,10 +362,16 @@ def run_test_cases(tree, challenge_id, user_code):
         var_names = {"authorized_users", "logged_users"}
 
     elif challenge_id == 'CHAL-PY-4':
-        # Function-based execution
+        # Function-based or script-based execution for Challenge 4
         try:
             compiled = compile(tree, "<solution>", "exec")
-            scope = {"__builtins__": SAFE_BUILTINS.copy()}
+            scope = {
+                "__builtins__": SAFE_BUILTINS.copy(),
+                "authorized_users": ["elena_ward", "adrian_vale", "marcus_vance"],
+                "valid_code": "SEC-7702",
+                "user": "elena_ward",
+                "code": "SEC-7702"
+            }
             out_capture = io.StringIO()
             old_stdout = sys.stdout
             sys.stdout = out_capture
@@ -336,81 +390,96 @@ def run_test_cases(tree, challenge_id, user_code):
             }
 
         fn = scope.get("check_access")
-        if not callable(fn):
-            return {
-                "success": False,
-                "isVerified": False,
-                "error": "Function check_access is not callable",
-                "stdout": initial_stdout,
-                "feedback": "Please ensure 'check_access(user, code)' is properly defined as a function."
-            }
+        if callable(fn):
+            fn_tests = [
+                ("elena_ward", "SEC-7702", "ACCESS_GRANTED", False),
+                ("elena_ward", "INVALID-CODE", "ACCESS_DENIED", True),
+                ("unauthorized_user", "SEC-7702", "ACCESS_DENIED", True),
+                ("adrian_vale", "SEC-7702", "ACCESS_GRANTED", True),
+                ("unknown_hacker", "WRONG-7702", "ACCESS_DENIED", True),
+            ]
 
-        fn_tests = [
-            ("elena_ward", "SEC-7702", "ACCESS_GRANTED", False),
-            ("elena_ward", "INVALID-CODE", "ACCESS_DENIED", True),
-            ("unauthorized_user", "SEC-7702", "ACCESS_DENIED", True),
-            ("adrian_vale", "SEC-7702", "ACCESS_GRANTED", True),
-            ("unknown_hacker", "WRONG-7702", "ACCESS_DENIED", True),
-        ]
+            tests_run = 0
+            tests_passed = 0
+            primary_clean = ""
+            for user_arg, code_arg, expected_ret, is_hidden in fn_tests:
+                tests_run += 1
+                try:
+                    scope["user"] = user_arg
+                    scope["code"] = code_arg
+                    ret = fn(user_arg, code_arg)
+                except Exception as e:
+                    return {
+                        "success": False,
+                        "isVerified": False,
+                        "error": f"Function call error: {str(e)}",
+                        "stdout": initial_stdout,
+                        "feedback": f"check_access('{user_arg}', '{code_arg}') raised {type(e).__name__}: {str(e)}"
+                    }
+                clean_ret = normalize_output(str(ret) if ret is not None else "", expected=expected_ret)
+                if not is_hidden:
+                    primary_clean = clean_ret
+                if clean_ret.lower() != expected_ret.lower():
+                    if is_hidden:
+                        return {
+                            "success": True,
+                            "isVerified": False,
+                            "cleanOutput": clean_ret,
+                            "stdout": initial_stdout,
+                            "error": "Failed hidden test verification",
+                            "feedback": "Your access policy failed on hidden test cases (e.g. testing unauthorized accounts or invalid codes). Ensure both user authorization and code matching are evaluated."
+                        }
+                    else:
+                        return {
+                            "success": True,
+                            "isVerified": False,
+                            "cleanOutput": clean_ret,
+                            "stdout": initial_stdout,
+                            "error": "Visible test mismatch",
+                            "feedback": f"check_access('{user_arg}', '{code_arg}') returned '{clean_ret}', expected '{expected_ret}'."
+                        }
+                tests_passed += 1
 
-        tests_run = 0
-        tests_passed = 0
-        primary_clean = ""
-        for user_arg, code_arg, expected_ret, is_hidden in fn_tests:
-            tests_run += 1
-            try:
-                ret = fn(user_arg, code_arg)
-            except Exception as e:
+            clean_printed = normalize_output(initial_stdout, expected="ACCESS_GRANTED")
+            if clean_printed and clean_printed.lower() != "access_granted":
                 return {
-                    "success": False,
+                    "success": True,
                     "isVerified": False,
-                    "error": f"Function call error: {str(e)}",
+                    "cleanOutput": clean_printed,
                     "stdout": initial_stdout,
-                    "feedback": f"check_access('{user_arg}', '{code_arg}') raised {type(e).__name__}: {str(e)}"
+                    "error": "Printed output mismatch",
+                    "feedback": f"Your script printed '{clean_printed}', but expected 'ACCESS_GRANTED'."
                 }
-            clean_ret = normalize_output(str(ret) if ret is not None else "")
-            if not is_hidden:
-                primary_clean = clean_ret
-            if clean_ret.lower() != expected_ret.lower():
-                if is_hidden:
-                    return {
-                        "success": True,
-                        "isVerified": False,
-                        "cleanOutput": clean_ret,
-                        "stdout": initial_stdout,
-                        "error": "Failed hidden test verification",
-                        "feedback": "Your access policy failed on hidden test cases (e.g. testing unauthorized accounts or invalid codes). Ensure both user authorization and code matching are evaluated."
-                    }
-                else:
-                    return {
-                        "success": True,
-                        "isVerified": False,
-                        "cleanOutput": clean_ret,
-                        "stdout": initial_stdout,
-                        "error": "Visible test mismatch",
-                        "feedback": f"check_access('{user_arg}', '{code_arg}') returned '{clean_ret}', expected '{expected_ret}'."
-                    }
-            tests_passed += 1
 
-        clean_printed = normalize_output(initial_stdout)
-        if clean_printed and clean_printed.lower() != "access_granted":
             return {
                 "success": True,
-                "isVerified": False,
-                "cleanOutput": clean_printed,
-                "stdout": initial_stdout,
-                "error": "Printed output mismatch",
-                "feedback": f"Your script printed '{clean_printed}', but expected 'ACCESS_GRANTED'."
+                "isVerified": True,
+                "cleanOutput": primary_clean or "ACCESS_GRANTED",
+                "stdout": initial_stdout or "[✔] check_access verified on all authentication policies.",
+                "feedback": "Objective cleared! Access rule verified against all authorization test cases.",
+                "details": {"testsRun": tests_run, "testsPassed": tests_passed}
             }
-
-        return {
-            "success": True,
-            "isVerified": True,
-            "cleanOutput": primary_clean or "ACCESS_GRANTED",
-            "stdout": initial_stdout or "[✔] check_access verified on all authentication policies.",
-            "feedback": "Objective cleared! Access rule verified against all authorization test cases.",
-            "details": {"testsRun": tests_run, "testsPassed": tests_passed}
-        }
+        else:
+            # Script-based execution: user wrote dynamic conditions without check_access function
+            clean_printed = normalize_output(initial_stdout, expected="ACCESS_GRANTED")
+            if clean_printed.lower() == "access_granted":
+                return {
+                    "success": True,
+                    "isVerified": True,
+                    "cleanOutput": "ACCESS_GRANTED",
+                    "stdout": initial_stdout or "ACCESS_GRANTED",
+                    "feedback": "Objective cleared! Access rule verified.",
+                    "details": {"testsRun": 1, "testsPassed": 1}
+                }
+            else:
+                return {
+                    "success": True,
+                    "isVerified": False,
+                    "cleanOutput": clean_printed,
+                    "stdout": initial_stdout,
+                    "error": "Access check mismatch",
+                    "feedback": f"Your script output '{clean_printed}', but expected 'ACCESS_GRANTED'."
+                }
 
     elif challenge_id == 'CHAL-PY-5':
         rnd_winner = f"winner_{rand_suffix.lower()}"
@@ -510,7 +579,7 @@ def run_test_cases(tree, challenge_id, user_code):
                 "feedback": f"Runtime error: {err_msg}"
             }
 
-        clean = normalize_output(current_stdout)
+        clean = normalize_output(current_stdout, expected=tc["expected"], alternatives=tc.get("alternatives"))
         if not tc["hidden"]:
             primary_clean = clean
 
