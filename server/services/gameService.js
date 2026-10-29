@@ -1387,8 +1387,37 @@ class GameService {
     const myTeam = (allTeams || []).find(t => t.id === teamId);
     const myRole = myTeam ? myTeam.role : 'SPECTATOR';
 
+    const now = Date.now();
+    const timeoutMs = 90000;
+
+    // Filter to real, active squads for live state:
+    // Exclude unjoined placeholder bots, disconnected players, and squads removed by administrator
+    const activeEligibleTeams = (allTeams || []).filter(t => {
+      // Exclude placeholder bot teams
+      if (t.is_bot && (!Array.isArray(t.players) || t.players.length === 0)) return false;
+      // Exclude squads removed by administrator or marked inactive
+      if (t.status === 'REMOVED_BY_ADMIN' || (t.is_eliminated && t.removal_reason) || t.is_active === false) {
+        return false;
+      }
+      // Must be genuinely joined by a real player
+      const hasPlayers = (Array.isArray(t.players) && t.players.length > 0) || t.is_active === true;
+      if (!hasPlayers) return false;
+
+      // If team already submitted their final tribunal verdict, keep on live state as completed
+      if (t.has_submitted_accusation) return true;
+
+      // Heartbeat timeout check: if last_seen_at is too old, consider disconnected/inactive
+      if (t.last_seen_at) {
+        const lastSeenMs = new Date(t.last_seen_at).getTime();
+        if (!isNaN(lastSeenMs) && (now - lastSeenMs) > timeoutMs) {
+          return false;
+        }
+      }
+      return true;
+    });
+
     // Mask secret roles of other teams unless revealed or admin
-    const sanitizedTeams = (allTeams || []).map(t => {
+    const sanitizedTeams = activeEligibleTeams.map(t => {
       const isSelf = t.id === teamId;
       const isHackerAlly = myRole === 'HACKER' && t.role === 'HACKER';
       const showSecret = isAdmin || t.secret_revealed || isSelf || isHackerAlly;
@@ -1405,7 +1434,8 @@ class GameService {
         role: showSecret ? t.role : 'UNKNOWN',
         modules: t.modules,
         suspicion: t.suspicion,
-        score: t.score
+        score: t.score,
+        lastSeenAt: t.last_seen_at
       };
     });
 

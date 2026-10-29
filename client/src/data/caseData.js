@@ -622,7 +622,7 @@ export function createInitialGameState() {
     timer: 240,
     hintsRemaining: 3,
     hintsUsedPerChallenge: {},
-    teams: INITIAL_SUSPECTS,
+    teams: [],
     challenges: PYTHON_CHALLENGES,
     systemLogs: [
       { id: 'LOG-1', timestamp: '08:35:10', type: 'BREACH', source: 'CRIME_SCENE', message: 'CRITICAL: Dr. Adrian Vale found unresponsive in Private Lab 101. Building lockdown active.' },
@@ -658,6 +658,7 @@ export function loadSavedGameState() {
     return {
       ...createInitialGameState(),
       ...parsed,
+      teams: [], // Authoritative active squads come from server sync, never stale localStorage
       challenges: PYTHON_CHALLENGES
     };
   } catch (e) {

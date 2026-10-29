@@ -139,6 +139,53 @@ export default function AdminPanel({
       };
     }
   }, [activeTab, isAdmin, sessionId]);
+  const [serverAuditLogs, setServerAuditLogs] = useState([]);
+
+  const fetchServerAuditLogs = async () => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    try {
+      const res = await fetch('/api/game-action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'GET_AUDIT_TRAIL', sessionId })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.logs)) {
+          setServerAuditLogs(data.logs);
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to fetch server audit trail:', e);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'AUDIT' && isAdmin) {
+      fetchServerAuditLogs();
+      const interval = setInterval(fetchServerAuditLogs, 6000);
+      const handleVis = () => {
+        if (document.visibilityState === 'visible') fetchServerAuditLogs();
+      };
+      document.addEventListener('visibilitychange', handleVis);
+      return () => {
+        clearInterval(interval);
+        document.removeEventListener('visibilitychange', handleVis);
+      };
+    }
+  }, [activeTab, isAdmin, sessionId]);
+
+  useEffect(() => {
+    if (activeTab === 'TEAMS' && isAdmin && onAdminAction) {
+      onAdminAction('REFRESH_STATE');
+      const interval = setInterval(() => {
+        if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+          onAdminAction('REFRESH_STATE');
+        }
+      }, 6000);
+      return () => clearInterval(interval);
+    }
+  }, [activeTab, isAdmin]);
 
   useEffect(() => {
     setAdminKeyInput(adminKey || '');
@@ -269,6 +316,16 @@ export default function AdminPanel({
   // Build unified chronological audit trail
   const combinedAuditTrail = [
     ...(auditLogs || []),
+    ...(serverAuditLogs || []).map(l => ({
+      id: l.id || `SRV-${l.created_at}`,
+      timestamp: l.created_at ? new Date(l.created_at).toLocaleTimeString() : '00:00:00',
+      category: l.log_type || 'SYSTEM',
+      playerName: l.source || 'Server',
+      systemNo: 'SYS-SRV',
+      teamId: 'CORE',
+      teamName: 'Init Command',
+      message: l.message
+    })),
     ...(allAlerts || []).map(al => ({
       id: al.id || 'SEC-' + al.timestamp,
       timestamp: al.timestamp,
@@ -580,13 +637,24 @@ export default function AdminPanel({
                         </p>
                       </div>
                     </div>
-                    <button
-                      onClick={() => { playClick(); fetchLiveLeaderboard(); }}
-                      className="px-3 py-1.5 bg-slate-900 border border-slate-700 hover:border-slate-500 rounded-lg text-xs text-slate-300 flex items-center gap-1.5 cursor-pointer shadow"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 text-cyan-400 ${loadingLeaderboard ? 'animate-spin' : ''}`} />
-                      Refresh Standings
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => { playClick(); window.open('/leaderboard', '_blank'); }}
+                        className="px-3 py-1.5 bg-cyan-950/80 border border-cyan-700/80 hover:bg-cyan-900 rounded-lg text-xs text-cyan-300 font-bold flex items-center gap-1.5 cursor-pointer shadow transition-all"
+                        title="Open Dedicated Full-Screen Live Leaderboard for Projector"
+                      >
+                        <Monitor className="w-3.5 h-3.5 text-cyan-400" />
+                        Launch Projector View
+                      </button>
+
+                      <button
+                        onClick={() => { playClick(); fetchLiveLeaderboard(); }}
+                        className="px-3 py-1.5 bg-slate-900 border border-slate-700 hover:border-slate-500 rounded-lg text-xs text-slate-300 flex items-center gap-1.5 cursor-pointer shadow"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 text-cyan-400 ${loadingLeaderboard ? 'animate-spin' : ''}`} />
+                        Refresh Standings
+                      </button>
+                    </div>
                   </div>
 
                   {/* Leaderboard Table */}

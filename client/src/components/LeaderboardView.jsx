@@ -132,14 +132,25 @@ export default function LeaderboardView({
             </div>
           </div>
 
-          <button
-            onClick={() => { playClick(); fetchLeaderboard(); }}
-            className="px-3 py-1.5 bg-slate-950 border border-slate-700 hover:border-slate-500 rounded-lg text-xs text-slate-300 flex items-center gap-1.5 cursor-pointer shadow"
-            title="Refresh Standings"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 text-cyan-400 ${loading ? 'animate-spin' : ''}`} />
-            Refresh
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => { playClick(); window.open('/leaderboard', '_blank'); }}
+              className="px-3 py-1.5 bg-cyan-950/80 border border-cyan-700/80 hover:bg-cyan-900 rounded-lg text-xs text-cyan-300 font-bold flex items-center gap-1.5 cursor-pointer shadow transition-all"
+              title="Open Dedicated Full-Screen Live Leaderboard for Projector"
+            >
+              <Monitor className="w-3.5 h-3.5 text-cyan-400" />
+              Projector View
+            </button>
+
+            <button
+              onClick={() => { playClick(); fetchLeaderboard(); }}
+              className="px-3 py-1.5 bg-slate-950 border border-slate-700 hover:border-slate-500 rounded-lg text-xs text-slate-300 flex items-center gap-1.5 cursor-pointer shadow"
+              title="Refresh Standings"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 text-cyan-400 ${loading ? 'animate-spin' : ''}`} />
+              Refresh
+            </button>
+          </div>
         </div>
 
         {/* Match Stopwatch & Status HUD */}

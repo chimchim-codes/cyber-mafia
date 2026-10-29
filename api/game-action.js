@@ -233,21 +233,34 @@ module.exports = async function handler(req, res) {
       // Reset all teams in this session
       const { data: teams } = await supabase.from('teams').select('*').eq('session_id', sessionId);
       for (const t of (teams || [])) {
-        await supabase.from('teams').update({
-          score: 0,
-          integrity: 100,
-          is_eliminated: false,
-          secret_revealed: false,
-          players: [],
-          is_bot: true,
-          updated_at: new Date().toISOString()
-        }).eq('session_id', sessionId).eq('id', t.id);
+        if (t.id && t.id.startsWith('SQ_')) {
+          await supabase.from('teams').delete().eq('session_id', sessionId).eq('id', t.id);
+        } else {
+          await supabase.from('teams').update({
+            score: 0,
+            integrity: 100,
+            is_eliminated: false,
+            secret_revealed: false,
+            players: [],
+            is_bot: true,
+            is_active: false,
+            status: 'LOBBY',
+            removal_reason: null,
+            has_submitted_accusation: false,
+            accusation_submitted_at: null,
+            accusation_score: null,
+            completed_stages: 0,
+            completed_levels: 0,
+            updated_at: new Date().toISOString()
+          }).eq('session_id', sessionId).eq('id', t.id);
+        }
       }
 
-      // Clear score_events and team_progress for clean slate
+      // Clear score_events, team_progress, and game_logs for clean slate
       try {
         await supabase.from('score_events').delete().eq('session_id', sessionId);
         await supabase.from('team_progress').delete().eq('session_id', sessionId);
+        await supabase.from('game_logs').delete().eq('session_id', sessionId);
       } catch (_) {}
 
       await gameService.logSystem(sessionId, 'ADMIN_RESET', 'ADMIN', `Match session ${sessionId} completely reset to Lobby. All scores and checkpoints wiped.`);

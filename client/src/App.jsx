@@ -19,6 +19,7 @@ import RevealModal from './components/RevealModal';
 import GameChat from './components/GameChat';
 import AdminPanel from './components/AdminPanel';
 import LeaderboardView from './components/LeaderboardView';
+import FullScreenLeaderboard from './components/FullScreenLeaderboard';
 import { generateTribunalAccusationPDF } from './utils/pdfGenerator';
 
 import { 
@@ -83,10 +84,21 @@ if (targetSocketUrl) {
 
 const DEFAULT_SESSION_ID = 'default-cyber-session';
 
-// Safe network fetch with timeout to prevent hung requests / net::ERR_TIMED_OUT
+// Safe network fetch with timeout and cancellation support to prevent hung requests / net::ERR_TIMED_OUT
 export async function safeApiFetch(url, options = {}, timeoutMs = 7000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  if (options.signal) {
+    if (options.signal.aborted) {
+      clearTimeout(timer);
+      const err = new Error('Aborted');
+      err.name = 'AbortError';
+      throw err;
+    }
+    options.signal.addEventListener('abort', () => controller.abort(), { once: true });
+  }
+
   try {
     const res = await fetch(url, {
       ...options,
@@ -101,7 +113,9 @@ export async function safeApiFetch(url, options = {}, timeoutMs = 7000) {
 // Preserve local forensic challenges and progression when merging server state
 function mergeServerStateWithLocal(serverState, prevState) {
   if (!serverState) return prevState;
-  const isPlayingCivilian = prevState?.phase === 'CIVILIAN_PHASE' || serverState?.phase === 'CIVILIAN_PHASE';
+
+  const isServerLobbyOrReset = serverState?.phase === 'LOBBY' || serverState?.status === 'NOT_STARTED';
+  const isPlayingCivilian = !isServerLobbyOrReset && (prevState?.phase === 'CIVILIAN_PHASE' || serverState?.phase === 'CIVILIAN_PHASE');
 
   const challenges = (serverState.challenges && Array.isArray(serverState.challenges) && serverState.challenges.length > 0)
     ? serverState.challenges
@@ -124,7 +138,8 @@ function mergeServerStateWithLocal(serverState, prevState) {
     ...prevState,
     ...serverState,
     phase: isPlayingCivilian ? 'CIVILIAN_PHASE' : (serverState.phase || prevState?.phase || 'LOBBY'),
-    status: isPlayingCivilian ? 'RUNNING' : (serverState.status || prevState?.status || 'NOT_STARTED'),
+    status: isPlayingCivilian ? (serverState.status || 'RUNNING') : (serverState.status || prevState?.status || 'NOT_STARTED'),
+    isPaused: Boolean(serverState.isPaused),
     challenges,
     currentStage,
     completedStages,
@@ -140,6 +155,18 @@ function mergeServerStateWithLocal(serverState, prevState) {
 export default function App() {
   const [sessionId, setSessionId] = useState(DEFAULT_SESSION_ID);
   const hasEnteredFullscreenRef = useRef(false);
+
+  // Dedicated Full-Screen Live Leaderboard Route for Projector, Auditorium & Large Displays
+  const isLeaderboardRoute = typeof window !== 'undefined' && (
+    window.location.pathname === '/leaderboard' ||
+    window.location.pathname === '/live-leaderboard' ||
+    window.location.search.includes('view=projector') ||
+    window.location.search.includes('mode=leaderboard')
+  );
+
+  if (isLeaderboardRoute) {
+    return <FullScreenLeaderboard sessionId={sessionId} />;
+  }
   
   // Restore game state from localStorage so reload maintains all progress
   const [gameState, setGameState] = useState(() => {
@@ -373,6 +400,78 @@ export default function App() {
       supabase.removeChannel(channel);
     };
   }, [sessionId, myTeam?.id]);
+
+  // -------------------------------------------------------------------------
+  // Reliable Cross-Device State Synchronization (Vercel Serverless Compatible)
+  // Polls /api/session every 6 seconds (within 5-8s spec), handles tab visibility,
+  // uses AbortController to cancel overlapping in-flight requests and cleans up on unmount.
+  // -------------------------------------------------------------------------
+  const stateAbortRef = useRef(null);
+
+  useEffect(() => {
+    const syncAuthoritativeState = async () => {
+      // Pause polling while tab is hidden
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        return;
+      }
+
+      if (stateAbortRef.current) {
+        stateAbortRef.current.abort();
+      }
+      stateAbortRef.current = new AbortController();
+
+      const activeTeamId = myTeam?.id || localStorage.getItem('cyber_mafia_team_id');
+      const keyToUse = adminKey.trim() || localStorage.getItem('cyber_mafia_admin_key') || '';
+      try {
+        const headers = {};
+        if (keyToUse) {
+          headers['x-admin-key'] = keyToUse;
+        }
+        const res = await safeApiFetch(
+          `/api/session?sessionId=${encodeURIComponent(sessionId)}${activeTeamId ? `&teamId=${activeTeamId}` : ''}`,
+          {
+            headers,
+            signal: stateAbortRef.current.signal
+          },
+          6000
+        );
+        if (res && res.ok) {
+          const state = await res.json();
+          if (state.myTeam && (state.myTeam.status === 'REMOVED_BY_ADMIN' || (state.myTeam.is_eliminated && state.myTeam.removal_reason))) {
+            handlePlayerRemovedByAdmin(state.myTeam.removal_reason);
+            return;
+          }
+          setGameState(prev => mergeServerStateWithLocal(state, prev));
+          if (state.myTeam) {
+            setMyTeam(prev => ({ ...prev, ...state.myTeam }));
+          }
+        }
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          // Intermittent network error handled gracefully
+        }
+      }
+    };
+
+    // 6-second polling interval
+    const interval = setInterval(syncAuthoritativeState, 6000);
+
+    // Immediate authoritative fetch when hidden tab becomes visible again
+    const handleVis = () => {
+      if (document.visibilityState === 'visible') {
+        refreshGameState();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVis);
+
+    return () => {
+      clearInterval(interval);
+      if (stateAbortRef.current) {
+        stateAbortRef.current.abort();
+      }
+      document.removeEventListener('visibilitychange', handleVis);
+    };
+  }, [sessionId, myTeam?.id, adminKey]);
 
   // Socket Fallback Events
   useEffect(() => {
@@ -662,7 +761,7 @@ export default function App() {
 
   // Periodic heartbeat to maintain active player status and detect admin kicks
   useEffect(() => {
-    if (!myTeam?.id || gameState?.phase === 'LOBBY' || isAdmin) return;
+    if (!myTeam?.id || isAdmin) return;
 
     const sendHeartbeat = async () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
@@ -674,7 +773,7 @@ export default function App() {
             action: 'HEARTBEAT',
             sessionId,
             teamId: myTeam.id,
-            playerName: myTeam.playerName,
+            playerName: myTeam.playerName || myTeam.name,
             teamName: myTeam.name
           })
         }, 5000);
@@ -687,9 +786,9 @@ export default function App() {
       } catch (_) {}
     };
 
-    const interval = setInterval(sendHeartbeat, 15000);
+    const interval = setInterval(sendHeartbeat, 12000);
     return () => clearInterval(interval);
-  }, [myTeam?.id, myTeam?.name, myTeam?.playerName, gameState?.phase, isAdmin, sessionId]);
+  }, [myTeam?.id, myTeam?.name, myTeam?.playerName, isAdmin, sessionId]);
 
   // Handler: Join Team (Works standalone and syncs over API/socket)
   const handleJoinTeam = async (playerName, teamId, systemNo, teamName) => {
@@ -953,7 +1052,7 @@ export default function App() {
 
     let apiResult = null;
     try {
-      apiResult = await safeApiFetch('/api/game-action', {
+      const res = await safeApiFetch('/api/game-action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -963,6 +1062,13 @@ export default function App() {
           payload: { challengeId, answer, stageNumber: actualStage, code: actualCode }
         })
       }, 7000);
+      if (res) {
+        if (typeof res.json === 'function') {
+          apiResult = await res.json().catch(() => null);
+        } else {
+          apiResult = res;
+        }
+      }
     } catch (e) {
       console.warn('[handleSolveChallenge] API error:', e);
     }
@@ -1050,8 +1156,8 @@ export default function App() {
         success: true,
         isVerified: true,
         cleanOutput: verifiedOutput,
-        output: apiResult.output || `[✔] Verified: Stage ${currentStg} cleared!`,
-        message: apiResult.message || `Stage ${currentStg} Solved! +${points} PTS.`
+        output: apiResult?.output || apiResult?.stdout || `[✔] Verified: Stage ${currentStg} cleared!`,
+        message: apiResult?.message || `Stage ${currentStg} Solved! +${points} PTS.`
       };
     } else {
       playError();
@@ -1061,7 +1167,7 @@ export default function App() {
         success: false,
         isVerified: false,
         cleanOutput: null,
-        output: apiResult?.output || '> Validation rejected by authoritative server.',
+        output: apiResult?.output || apiResult?.stdout || `> ${failMsg}`,
         error: apiResult?.error || 'Validation failed',
         feedback: failMsg
       };
@@ -1357,6 +1463,15 @@ export default function App() {
               Leaderboard (Admin)
             </button>
           )}
+
+          <button
+            onClick={() => { playClick(); window.open('/leaderboard', '_blank'); }}
+            className="bg-slate-900/90 border border-cyan-800/80 hover:border-cyan-400 text-cyan-300 px-3 py-1.5 rounded-lg text-xs font-mono flex items-center gap-1.5 cursor-pointer shadow-lg"
+            title="Open Dedicated Full-Screen Live Leaderboard for Projector"
+          >
+            <Monitor className="w-3.5 h-3.5 text-cyan-400" />
+            Projector View
+          </button>
 
           <button
             onClick={() => { playClick(); setShowAdminPanel(true); }}

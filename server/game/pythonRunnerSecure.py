@@ -210,12 +210,12 @@ def run_test_cases(tree, challenge_id, user_code):
                 "hidden": True
             },
             {
-                "inputs": {"header": "X-Bypass-Key: ALPHA-KEY-404\r\nHost: local.net\r\nAccept: */*"},
+                "inputs": {"header": "Host: edge-router.internal\r\nX-Bypass-Key: ALPHA-KEY-404\r\nAccept: text/plain"},
                 "expected": "ALPHA-KEY-404",
                 "hidden": True
             },
             {
-                "inputs": {"header": f"Host: edge-router\r\nContent-Type: text/plain\r\nX-Bypass-Key: {rnd_key}\r\nStatus: 200"},
+                "inputs": {"header": f"Host: gateway.vault\r\nX-Bypass-Key: {rnd_key}\r\nStatus: 200"},
                 "expected": rnd_key,
                 "hidden": True
             }
