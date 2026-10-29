@@ -16,7 +16,6 @@ import CivilianDashboard from './components/CivilianDashboard';
 import AccusationModal from './components/AccusationModal';
 import DefencePhaseModal from './components/DefencePhaseModal';
 import RevealModal from './components/RevealModal';
-import GameChat from './components/GameChat';
 import AdminPanel from './components/AdminPanel';
 import LeaderboardView from './components/LeaderboardView';
 import FullScreenLeaderboard from './components/FullScreenLeaderboard';
@@ -306,6 +305,7 @@ export default function App() {
     localStorage.setItem('cyber_mafia_is_admin', 'false');
     setAdminKey('');
     setIsAdmin(false);
+    setShowAdminPanel(false);
     showToast('Admin logged out', 'INFO');
   };
 
@@ -1443,6 +1443,8 @@ export default function App() {
           onJoinTeam={handleJoinTeam}
           onStartGame={handleStartGame}
           isAdmin={isAdmin}
+          onAdminLogin={handleAdminLogin}
+          onAdminLogout={handleAdminLogout}
           onOpenAdmin={() => {
             playClick();
             setShowAdminPanel(true);
@@ -1478,18 +1480,6 @@ export default function App() {
           >
             <Monitor className="w-3.5 h-3.5 text-cyan-400" />
             Projector View
-          </button>
-
-          <button
-            onClick={() => { playClick(); setShowAdminPanel(true); }}
-            className={`border px-3 py-1.5 rounded-lg text-xs font-mono flex items-center gap-1.5 cursor-pointer shadow-lg transition-colors ${
-              isAdmin
-                ? 'bg-amber-950/90 border-amber-500 text-amber-300 hover:bg-amber-900/90'
-                : 'bg-slate-900/90 border-slate-700 hover:border-amber-500 text-slate-300 hover:text-white'
-            }`}
-          >
-            <Settings className="w-3.5 h-3.5 text-amber-400" />
-            {isAdmin ? 'Admin Console' : 'Admin Login'}
           </button>
         </div>
 
@@ -1606,19 +1596,8 @@ export default function App() {
           </div>
         </div>
 
-        {/* Phase Timer & Leaderboard Gauge */}
+        {/* Phase Timer & Compact HUD Indicators */}
         <div className="flex items-center gap-3">
-          {/* Active Gameplay Elapsed Time */}
-          {gameState?.timing && (
-            <div className="hidden md:flex items-center gap-2 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 text-xs">
-              <span className="text-slate-500 text-[10px]">ACTIVE:</span>
-              <span className="font-bold text-cyan-300">
-                {Math.floor(gameState.timing.activeGameplaySeconds / 60)}:
-                {(gameState.timing.activeGameplaySeconds % 60).toString().padStart(2, '0')}
-              </span>
-            </div>
-          )}
-
           {/* Investigation Stopwatch */}
           <div className="flex items-center gap-2.5 bg-slate-950 px-3.5 py-1.5 rounded-xl border border-slate-800 shadow-inner" title="Active investigation stopwatch">
             <Clock className={`w-4 h-4 ${gameState?.isPaused ? 'text-slate-500' : 'text-amber-400 animate-pulse'}`} />
@@ -1636,6 +1615,21 @@ export default function App() {
             <span className="text-slate-300 font-bold">{myTeam?.name || 'Cyber Alpha'}</span>
             <span className="text-slate-600">•</span>
             <span className="text-amber-300 font-mono font-bold">{localStorage.getItem('cyber_mafia_system_no') || myTeam?.systemNo || 'SYS-01'}</span>
+          </div>
+
+          {/* Stage Progress */}
+          <div className="hidden sm:flex items-center gap-1.5 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 text-xs shadow-inner">
+            <span className="text-slate-500 font-bold text-[10px]">STAGE:</span>
+            <span className="text-cyan-400 font-bold font-mono">{Math.min(gameState?.currentStage || 1, 5)}/5</span>
+          </div>
+
+          {/* Score & Integrity */}
+          <div className="flex items-center gap-2 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 text-xs shadow-inner">
+            <span className="text-emerald-400 font-bold font-mono">+{myTeam?.score || 0} PTS</span>
+            <span className="text-slate-600">•</span>
+            <span className={`font-bold font-mono ${(myTeam?.integrity || 100) > 60 ? 'text-cyan-400' : 'text-amber-400'}`}>
+              {myTeam?.integrity || 100}%
+            </span>
           </div>
 
           {/* Admin Exit to Lobby Button */}
@@ -1662,7 +1656,7 @@ export default function App() {
             </button>
           )}
 
-          {/* Audio, Guide & Admin */}
+          {/* Audio & Guide */}
           <div className="flex items-center gap-1.5">
             <button
               onClick={handleSoundToggle}
@@ -1678,19 +1672,6 @@ export default function App() {
               title="Case Manual"
             >
               <HelpCircle className="w-3.5 h-3.5 text-amber-400" />
-            </button>
-
-            <button
-              onClick={() => { playClick(); setShowAdminPanel(true); }}
-              className={`p-2 rounded-lg font-bold text-xs flex items-center gap-1.5 cursor-pointer border ${
-                isAdmin
-                  ? 'bg-amber-950/60 border-amber-600 text-amber-300'
-                  : 'bg-slate-950 border-slate-800 hover:border-slate-700 text-slate-400 hover:text-white'
-              }`}
-              title="Administrative Master Console"
-            >
-              <Settings className={`w-4 h-4 ${isAdmin ? 'text-amber-400' : 'text-slate-400'}`} />
-              <span className="hidden md:inline">{isAdmin ? 'Admin' : 'Admin Login'}</span>
             </button>
           </div>
         </div>
@@ -1834,14 +1815,6 @@ export default function App() {
 
       {/* Guide Modal */}
       {showGuideModal && <GameGuideModal onClose={() => setShowGuideModal(false)} />}
-
-      {/* Tactical Comms */}
-      <GameChat
-        messages={gameState?.chatMessages || []}
-        myTeam={myTeam}
-        onSendMessage={handleSendMessage}
-        visibleEvidence={myTeam?.visibleEvidence || []}
-      />
 
       {/* Anti-Cheat Fullscreen Enforcement Modal (Disabled for Admin) */}
       {gameState?.phase === 'CIVILIAN_PHASE' && !isFullscreen && !isAdmin && (

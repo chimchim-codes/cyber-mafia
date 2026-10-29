@@ -1,8 +1,7 @@
 // client/src/components/CivilianDashboard.jsx
 import React, { useState } from 'react';
 import { 
-  Shield, Search, Terminal, Network, 
-  Pin, ShieldAlert, Cpu, CheckCircle2, Activity, Code2
+  Search, Terminal, Network, Pin, ShieldAlert, Code2
 } from 'lucide-react';
 import CivilianInspect from './CivilianInspect';
 import CivilianLogs from './CivilianLogs';
@@ -28,63 +27,9 @@ export default function CivilianDashboard({
   const [activeTool, setActiveTool] = useState('PYTHON_LAB');
 
   const visibleEvidence = allEvidence.filter(e => unlockedBatches.includes(e.batch));
-  const integrity = myTeam?.integrity || 100;
-
-  const formatMinutesSeconds = (sec) => {
-    const m = Math.floor(sec / 60);
-    const s = sec % 60;
-    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-  };
 
   return (
     <div className="space-y-4">
-      {/* Top HUD Banner */}
-      <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 shadow-xl flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-cyan-950 border border-cyan-500 flex items-center justify-center text-cyan-400">
-            <Shield className="w-5 h-5" />
-          </div>
-          <div>
-            <div className="text-[10px] font-mono uppercase tracking-widest text-cyan-400">
-              init Association // FALSE TRIALS
-            </div>
-            <h2 className="text-lg md:text-xl font-black text-slate-100">
-              {myTeam?.name || 'Investigator Unit'}
-            </h2>
-          </div>
-        </div>
-
-        {/* Status Indicators */}
-        <div className="flex items-center gap-3 text-xs font-mono">
-          <div className="bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
-            <span className="text-slate-500 block text-[10px]">STOPWATCH</span>
-            <span className="text-amber-300 font-bold font-mono">{formatMinutesSeconds(elapsedSeconds)}</span>
-          </div>
-
-          <div className="hidden sm:block bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
-            <span className="text-slate-500 block text-[10px]">STATION</span>
-            <span className="text-cyan-300 font-bold font-mono">{localStorage.getItem('cyber_mafia_system_no') || myTeam?.systemNo || 'SYS-01'}</span>
-          </div>
-
-          <div className="bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
-            <span className="text-slate-500 block text-[10px]">STAGE PROGRESS</span>
-            <span className="text-cyan-400 font-bold">Stage {Math.min(currentStage, 5)} / 5</span>
-          </div>
-
-          <div className="bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
-            <span className="text-slate-500 block text-[10px]">SCORE</span>
-            <span className="text-emerald-400 font-bold">+{myTeam?.score || 0} PTS</span>
-          </div>
-
-          <div className="bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
-            <span className="text-slate-500 block text-[10px]">INTEGRITY</span>
-            <span className={`font-bold ${integrity > 60 ? 'text-cyan-400' : 'text-amber-400'}`}>
-              {integrity}%
-            </span>
-          </div>
-        </div>
-      </div>
-
       {/* Navigation Tool Tabs */}
       <div className="flex flex-wrap items-center gap-1.5 bg-slate-900/90 p-1.5 rounded-2xl border border-slate-800 text-xs font-mono">
         <button
