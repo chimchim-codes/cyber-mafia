@@ -410,16 +410,48 @@ module.exports = async function handler(req, res) {
 
       // Check progression lock: player cannot skip ahead to locked stages
       let currentTeam = null;
+      let completedCount = 0;
       if (teamId) {
-        const { data } = await supabase
-          .from('teams')
-          .select('completed_stages')
-          .eq('session_id', sessionId)
-          .eq('id', teamId)
-          .single();
-        currentTeam = data;
+        try {
+          const { data } = await supabase
+            .from('teams')
+            .select('completed_stages')
+            .eq('session_id', sessionId)
+            .eq('id', teamId)
+            .single();
+          currentTeam = data;
+          if (currentTeam?.completed_stages !== undefined && currentTeam?.completed_stages !== null) {
+            completedCount = currentTeam.completed_stages;
+          }
+        } catch (_) {}
+
+        // Query team_progress table which tracks authoritative level completions
+        try {
+          const { data: progList } = await supabase
+            .from('team_progress')
+            .select('level_id, status')
+            .eq('session_id', sessionId)
+            .eq('team_id', teamId);
+          if (Array.isArray(progList)) {
+            const completedFromProg = progList
+              .filter(p => p.status === 'COMPLETED')
+              .map(p => Number(p.level_id))
+              .filter(n => !isNaN(n));
+            if (completedFromProg.length > 0) {
+              completedCount = Math.max(completedCount, ...completedFromProg);
+            }
+          }
+        } catch (_) {}
       }
-      const completedCount = currentTeam?.completed_stages || 0;
+
+      // Also consider completedStages array sent from client if present
+      if (Array.isArray(payload?.completedStages) && payload.completedStages.length > 0) {
+        const clientCompletedMax = Math.max(...payload.completedStages.map(Number).filter(n => !isNaN(n)));
+        if (clientCompletedMax > completedCount) {
+          completedCount = Math.min(clientCompletedMax, 5);
+        }
+      }
+
       const reqStage = chal.stageNumber || stageNumber || 1;
       if (reqStage > completedCount + 1) {
         return res.status(400).json({
@@ -460,17 +492,48 @@ module.exports = async function handler(req, res) {
       });
 
       if (scoreResult.duplicate) {
-        return res.status(200).json({ success: false, message: 'Challenge already solved by your squad.' });
+        if (teamId) {
+          try {
+            const nextCompleted = chal.stageNumber || 1;
+            const updatedCompleted = Math.max(completedCount, nextCompleted);
+            try {
+              await supabase.from('teams').update({
+                completed_stages: updatedCompleted,
+                updated_at: new Date().toISOString()
+              }).eq('session_id', sessionId).eq('id', teamId);
+            } catch (_) {}
+
+            await supabase.from('team_progress').upsert({
+              session_id: sessionId,
+              team_id: teamId,
+              level_id: chal.stageNumber || 1,
+              status: 'COMPLETED',
+              last_checkpoint_at: new Date().toISOString()
+            }, { onConflict: 'session_id,team_id,level_id' });
+          } catch (_) {}
+        }
+        return res.status(200).json({
+          success: true,
+          isVerified: true,
+          alreadySolved: true,
+          cleanOutput: valResult.cleanOutput,
+          output: valResult.stdout,
+          message: `Stage ${chal.stageNumber || 1} already solved! Proceeding to next stage.`,
+          clue: chal.unlockSummary,
+          nextStage: Math.min((chal.stageNumber || 1) + 1, 5)
+        });
       }
 
       if (teamId) {
         try {
           const nextCompleted = chal.stageNumber || 1;
           const updatedCompleted = Math.max(completedCount, nextCompleted);
-          await supabase.from('teams').update({
-            completed_stages: updatedCompleted,
-            updated_at: new Date().toISOString()
-          }).eq('session_id', sessionId).eq('id', teamId);
+          try {
+            await supabase.from('teams').update({
+              completed_stages: updatedCompleted,
+              updated_at: new Date().toISOString()
+            }).eq('session_id', sessionId).eq('id', teamId);
+          } catch (_) {}
 
           await supabase.from('team_progress').upsert({
             session_id: sessionId,

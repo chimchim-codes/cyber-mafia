@@ -20,17 +20,26 @@ export default function CivilianCTFLab({
     ? propChallenges
     : PYTHON_CHALLENGES;
 
+  // Derive effective highest unlocked stage from currentStage and completedStages
+  const effectiveStage = Math.max(
+    Number(currentStage) || 1,
+    (completedStages && completedStages.length > 0) ? Math.min(Math.max(...completedStages) + 1, 5) : 1
+  );
+
   const [selectedChallengeId, setSelectedChallengeId] = useState(
-    challenges?.[currentStage - 1]?.id || challenges?.[0]?.id || 'CHAL-PY-1'
+    challenges?.[effectiveStage - 1]?.id || challenges?.[0]?.id || 'CHAL-PY-1'
   );
 
   // Sync selected challenge when stage advances
   useEffect(() => {
-    const nextChal = challenges?.find(c => c.stageNumber === currentStage);
-    if (nextChal) {
-      setSelectedChallengeId(nextChal.id);
+    const nextChal = challenges?.find(c => c.stageNumber === effectiveStage);
+    if (nextChal && selectedChallengeId !== nextChal.id) {
+      const currChal = challenges?.find(c => c.id === selectedChallengeId);
+      if (!currChal || completedStages.includes(currChal.stageNumber)) {
+        setSelectedChallengeId(nextChal.id);
+      }
     }
-  }, [currentStage, challenges]);
+  }, [effectiveStage, completedStages, challenges]);
 
   const activeChallenge = challenges?.find(c => c.id === selectedChallengeId) || challenges?.[0] || PYTHON_CHALLENGES[0];
 
@@ -105,7 +114,7 @@ export default function CivilianCTFLab({
   const activeTerminalOutput = terminalOutputs[activeChallenge?.id] || '';
 
   const isCompleted = completedStages?.includes(activeChallenge?.stageNumber) || activeChallenge?.isSolved;
-  const isLocked = activeChallenge?.stageNumber > currentStage;
+  const isLocked = activeChallenge?.stageNumber > effectiveStage;
 
   const handleCodeChange = (e) => {
     const val = e.target.value;
@@ -212,7 +221,7 @@ export default function CivilianCTFLab({
         {/* Progress Tracker */}
         <div className="flex items-center gap-3 bg-slate-950 px-3.5 py-2 rounded-xl border border-slate-800 text-xs">
           <span className="text-slate-400">Progress:</span>
-          <span className="text-cyan-400 font-bold">Stage {Math.min(currentStage, 5)} / 5</span>
+          <span className="text-cyan-400 font-bold">Stage {Math.min(effectiveStage, 5)} / 5</span>
           <div className="flex gap-1.5">
             {[1, 2, 3, 4, 5].map(stg => (
               <span 
@@ -220,7 +229,7 @@ export default function CivilianCTFLab({
                 className={`w-2.5 h-2.5 rounded-full ${
                   completedStages.includes(stg)
                     ? 'bg-emerald-400 shadow-sm shadow-emerald-400' 
-                    : stg === currentStage 
+                    : stg === effectiveStage 
                     ? 'bg-cyan-400 animate-pulse' 
                     : 'bg-slate-700'
                 }`} 
@@ -235,7 +244,7 @@ export default function CivilianCTFLab({
         {challenges?.map((chal) => {
           const isSelected = selectedChallengeId === chal.id;
           const isSolved = completedStages.includes(chal.stageNumber) || chal.isSolved;
-          const locked = chal.stageNumber > currentStage;
+          const locked = chal.stageNumber > effectiveStage;
 
           return (
             <button

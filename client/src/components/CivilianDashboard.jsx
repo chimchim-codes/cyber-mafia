@@ -27,6 +27,10 @@ export default function CivilianDashboard({
   const [activeTool, setActiveTool] = useState('PYTHON_LAB');
 
   const visibleEvidence = allEvidence.filter(e => unlockedBatches.includes(e.batch));
+  const effectiveStage = Math.max(
+    Number(currentStage) || 1,
+    (completedStages && completedStages.length > 0) ? Math.min(Math.max(...completedStages) + 1, 5) : 1
+  );
 
   return (
     <div className="space-y-4">
@@ -38,7 +42,7 @@ export default function CivilianDashboard({
             activeTool === 'PYTHON_LAB' ? 'bg-cyan-600 text-white shadow-md shadow-cyan-950' : 'text-slate-400 hover:text-white'
           }`}
         >
-          <Code2 className="w-3.5 h-3.5" /> PYTHON LAB (Stage {Math.min(currentStage, 5)}/5)
+          <Code2 className="w-3.5 h-3.5" /> PYTHON LAB (Stage {Math.min(effectiveStage, 5)}/5)
         </button>
 
         <button
@@ -89,7 +93,7 @@ export default function CivilianDashboard({
       {activeTool === 'PYTHON_LAB' && (
         <CivilianCTFLab
           challenges={gameState?.challenges || PYTHON_CHALLENGES}
-          currentStage={currentStage}
+          currentStage={effectiveStage}
           completedStages={completedStages}
           onSolveChallenge={onSolveChallenge}
           onRequestHint={onRequestHint}

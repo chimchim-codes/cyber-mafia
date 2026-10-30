@@ -1456,6 +1456,30 @@ class GameService {
     const timing = this.calculateElapsedTiming(session);
     const leaderboard = await this.getLeaderboard(sessionId, { activeOnly: true });
 
+    // Determine accurate completed stages for player's squad
+    let myCompletedStages = (myTeam?.completed_stages !== undefined && myTeam?.completed_stages !== null)
+      ? myTeam.completed_stages
+      : (myTeam?.completed_levels || 0);
+
+    if (teamId) {
+      try {
+        const { data: progRecords } = await supabase
+          .from('team_progress')
+          .select('level_id, status')
+          .eq('session_id', sessionId)
+          .eq('team_id', teamId);
+        if (Array.isArray(progRecords)) {
+          const completedFromProg = progRecords
+            .filter(p => p.status === 'COMPLETED')
+            .map(p => Number(p.level_id))
+            .filter(n => !isNaN(n));
+          if (completedFromProg.length > 0) {
+            myCompletedStages = Math.max(myCompletedStages, ...completedFromProg);
+          }
+        }
+      } catch (_) {}
+    }
+
     return {
       sessionId: session.id,
       status: session.status,
@@ -1484,9 +1508,9 @@ class GameService {
       revealResult: session.reveal_result,
       scoringRules: session.scoring_rules,
       challenges: generateCivilianLabChallenges(),
-      currentStage: Math.min((myTeam?.completed_stages || 0) + 1, 5),
-      completedStages: Array.from({ length: myTeam?.completed_stages || 0 }, (_, i) => i + 1),
-      unlockedEvidenceBatches: Array.from({ length: Math.min((myTeam?.completed_stages || 0) + 1, 6) }, (_, i) => i + 1)
+      currentStage: Math.min(myCompletedStages + 1, 5),
+      completedStages: Array.from({ length: myCompletedStages }, (_, i) => i + 1),
+      unlockedEvidenceBatches: Array.from({ length: Math.min(myCompletedStages + 1, 6) }, (_, i) => i + 1)
     };
   }
 }

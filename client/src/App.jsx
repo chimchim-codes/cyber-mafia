@@ -30,6 +30,7 @@ import {
 } from './data/caseData';
 
 import { toggleSound, playClick, playSuccess, playError, playAlarm, initAudio } from './utils/soundEffects';
+import { executePythonCode } from './utils/pythonRunner';
 
 // Format seconds into MM:SS
 export const formatMinutesSeconds = (totalSec) => {
@@ -129,16 +130,21 @@ function mergeServerStateWithLocal(serverState, prevState) {
         ? prevState.challenges
         : PYTHON_CHALLENGES);
 
-  const completedStages = (serverState.completedStages && Array.isArray(serverState.completedStages) && serverState.completedStages.length > 0)
-    ? serverState.completedStages
-    : (prevState?.completedStages || []);
+  const completedStages = Array.from(new Set([
+    ...(prevState?.completedStages || []),
+    ...(serverState.completedStages || [])
+  ])).sort((a, b) => a - b);
 
-  const currentStage = serverState.currentStage 
-    || (completedStages.length > 0 ? Math.min(Math.max(...completedStages) + 1, 5) : (prevState?.currentStage || 1));
+  const prevStage = Number(prevState?.currentStage) || 1;
+  const serverStage = Number(serverState?.currentStage) || 1;
+  const derivedStage = completedStages.length > 0 ? Math.min(Math.max(...completedStages) + 1, 5) : 1;
+  const currentStage = Math.max(prevStage, serverStage, derivedStage);
 
-  const unlockedEvidenceBatches = (serverState.unlockedEvidenceBatches && Array.isArray(serverState.unlockedEvidenceBatches) && serverState.unlockedEvidenceBatches.length > 0)
-    ? serverState.unlockedEvidenceBatches
-    : (prevState?.unlockedEvidenceBatches || [1]);
+  const unlockedEvidenceBatches = Array.from(new Set([
+    ...(prevState?.unlockedEvidenceBatches || [1]),
+    ...(serverState.unlockedEvidenceBatches || [1]),
+    ...completedStages.map(stg => Math.min(stg + 1, 6))
+  ])).sort((a, b) => a - b);
 
   return {
     ...prevState,
@@ -1066,7 +1072,13 @@ export default function App() {
           action: 'SOLVE_CIVILIAN_CHALLENGE',
           sessionId,
           teamId: myTeam?.id,
-          payload: { challengeId, answer, stageNumber: actualStage, code: actualCode }
+          payload: { 
+            challengeId, 
+            answer, 
+            stageNumber: actualStage, 
+            code: actualCode,
+            completedStages: gameState?.completedStages || []
+          }
         })
       }, 7000);
       if (res) {
@@ -1080,15 +1092,35 @@ export default function App() {
       console.warn('[handleSolveChallenge] API error:', e);
     }
 
-    // Only unlock and advance progress if authoritative backend verified and accepted the solution
-    if (apiResult && apiResult.success && apiResult.isVerified !== false) {
+    // Verify if authoritative backend accepted OR if local client verified in offline/fallback mode
+    let isAccepted = Boolean(apiResult && (apiResult.success || apiResult.alreadySolved) && apiResult.isVerified !== false);
+
+    // Robust fallback: if API was unreachable or timed out, verify via local sandbox runner
+    if (!apiResult && actualCode) {
+      try {
+        const localCheck = executePythonCode(actualCode, challengeId, chal);
+        if (localCheck && localCheck.isVerified && !localCheck.error) {
+          isAccepted = true;
+          apiResult = {
+            success: true,
+            isVerified: true,
+            cleanOutput: localCheck.result,
+            output: localCheck.output,
+            message: `Stage ${actualStage} Solved! +${chal.rewardScore || 100} PTS.`
+          };
+        }
+      } catch (_) {}
+    }
+
+    // Unlock and advance progress when solution is verified
+    if (isAccepted) {
       playSuccess();
       const currentStg = chal.stageNumber || actualStage || 1;
       const nextStage = Math.min(currentStg + 1, 5);
       const nextBatch = Math.min(chal.unlocksEvidenceBatch || (currentStg + 1), 6);
       const points = chal.rewardScore || 100;
       const newScore = (myTeam?.score || 0) + points;
-      const verifiedOutput = apiResult.cleanOutput || answer || 'VERIFIED';
+      const verifiedOutput = apiResult?.cleanOutput || answer || 'VERIFIED';
 
       showToast(`Stage ${currentStg} Solved! +${points} PTS. Evidence Batch ${nextBatch} Unlocked!`, 'SUCCESS');
 
